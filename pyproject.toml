@@ -33,6 +33,7 @@ where = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+markers = ["sandbox: integration tests that require a running Docker daemon"]
 
 [tool.ruff]
 line-length = 100

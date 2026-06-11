@@ -18,6 +18,7 @@ build/
 *.db
 data/
 logs/
+sandbox/runtime/
 
 # node / dashboard
 node_modules/

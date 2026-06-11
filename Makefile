@@ -2,7 +2,7 @@ VENV := .venv
 PY := $(VENV)/bin/python
 PIP := $(VENV)/bin/pip
 
-.PHONY: install test lint run-api sandbox-up sandbox-down bench
+.PHONY: install test test-sandbox lint run-api sandbox-up sandbox-down sandbox-reset bench
 
 install:
 	test -d $(VENV) || python3 -m venv $(VENV)
@@ -10,7 +10,10 @@ install:
 	$(PIP) install -e ".[dev]"
 
 test:
-	AUTOPILOT_MOCK_LLM=1 $(PY) -m pytest
+	AUTOPILOT_MOCK_LLM=1 $(PY) -m pytest -m "not sandbox"
+
+test-sandbox:
+	AUTOPILOT_MOCK_LLM=1 $(PY) -m pytest -m sandbox
 
 lint:
 	$(PY) -m ruff check src tests
@@ -19,10 +22,13 @@ run-api:
 	$(PY) -m uvicorn autopilot.api.app:app --reload --port 8080
 
 sandbox-up:
-	docker compose -f sandbox/docker-compose.yml up -d
+	$(PY) -m autopilot.sandbox up
 
 sandbox-down:
-	docker compose -f sandbox/docker-compose.yml down -v
+	$(PY) -m autopilot.sandbox down
+
+sandbox-reset:
+	$(PY) -m autopilot.sandbox reset
 
 bench:
 	$(PY) -m autopilot.benchmark

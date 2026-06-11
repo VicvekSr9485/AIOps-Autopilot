@@ -1,0 +1,5 @@
+{
+  "feature_mode": "standard",
+  "downstream_url": "http://downstream:9000/",
+  "downstream_timeout_s": 1.5
+}

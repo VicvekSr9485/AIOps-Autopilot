@@ -1,13 +1,84 @@
 # Sandboxed target stack. The executor may act ONLY on services defined here —
 # never on the host or any external system. Fault-injection scenarios from the
-# harness target these services. Placeholder service until the demo stack lands.
+# harness target these services. max_connections is deliberately low (10) so the
+# connection-exhaustion fault is reachable.
 name: autopilot-sandbox
 
 services:
-  demo-web:
-    image: nginx:1.27-alpine
-    container_name: autopilot-sbx-demo-web
+  app:
+    build: ./app
+    container_name: autopilot-sbx-app
+    environment:
+      DATABASE_URL: postgresql://app:app_pw@db:5432/autopilot
     ports:
-      - "8081:80"
+      - "8088:8000"
+    volumes:
+      - ./runtime/app-config.json:/app/config.json:ro
+    depends_on:
+      db:
+        condition: service_healthy
+      queue:
+        condition: service_healthy
+      downstream:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz', timeout=2)"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+    labels:
+      autopilot.sandbox: "true"
+
+  worker:
+    build: ./app
+    container_name: autopilot-sbx-worker
+    command: ["python", "worker.py"]
+    depends_on:
+      queue:
+        condition: service_healthy
+    labels:
+      autopilot.sandbox: "true"
+
+  downstream:
+    build: ./app
+    container_name: autopilot-sbx-downstream
+    command: ["uvicorn", "downstream:app", "--host", "0.0.0.0", "--port", "9000"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:9000/', timeout=2)"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+    labels:
+      autopilot.sandbox: "true"
+
+  db:
+    image: postgres:16-alpine
+    container_name: autopilot-sbx-db
+    command: ["postgres", "-c", "max_connections=10"]
+    environment:
+      POSTGRES_USER: autopilot
+      POSTGRES_PASSWORD: admin_pw
+      POSTGRES_DB: autopilot
+    volumes:
+      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U autopilot -d autopilot"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+    labels:
+      autopilot.sandbox: "true"
+
+  queue:
+    image: redis:7-alpine
+    container_name: autopilot-sbx-queue
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
     labels:
       autopilot.sandbox: "true"
