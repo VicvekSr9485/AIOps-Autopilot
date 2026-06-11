@@ -1,0 +1,13 @@
+# Sandboxed target stack. The executor may act ONLY on services defined here —
+# never on the host or any external system. Fault-injection scenarios from the
+# harness target these services. Placeholder service until the demo stack lands.
+name: autopilot-sandbox
+
+services:
+  demo-web:
+    image: nginx:1.27-alpine
+    container_name: autopilot-sbx-demo-web
+    ports:
+      - "8081:80"
+    labels:
+      autopilot.sandbox: "true"

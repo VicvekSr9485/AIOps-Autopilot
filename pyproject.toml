@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools==75.8.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "aiops-autopilot"
+version = "0.1.0"
+description = "AIOps Autopilot: incident ingestion -> root cause -> risk-scored remediation -> HITL gate -> sandboxed execution -> verification, benchmarked against a single-prompt baseline."
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi==0.115.12",
+    "pydantic==2.10.6",
+    "pydantic-settings==2.8.1",
+    "uvicorn==0.34.0",
+    "openai==1.66.3",
+    "mcp==1.9.4",
+    "structlog==25.1.0",
+    "httpx==0.28.1",
+    "sqlite-vec==0.1.6",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest==8.3.5",
+    "ruff==0.11.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
