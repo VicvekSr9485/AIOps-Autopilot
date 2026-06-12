@@ -7,9 +7,9 @@ from __future__ import annotations
 import pytest
 
 from autopilot.harness.faults import FAULTS
+from autopilot.harness.synthetic import FAULT_IDS, scenario_capture
 from autopilot.models import Incident, Severity
 from autopilot.pipeline.ingest import ingest
-from scenario_data import FAULT_IDS, scenario_capture
 
 
 @pytest.mark.parametrize("fault_id", FAULT_IDS)

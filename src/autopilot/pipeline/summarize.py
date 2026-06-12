@@ -64,3 +64,28 @@ def summarize_telemetry(telemetry: Telemetry, max_log_groups: int = MAX_LOG_GROU
         chars_out=len(summary),
     )
     return summary
+
+
+def render_raw_telemetry(telemetry: Telemetry) -> str:
+    """ABLATION ONLY (benchmark context mode B): the un-summarized rendering a
+    naive agent would put in context — every log line and metric point verbatim.
+    Production stages must keep using summarize_telemetry(); this exists to
+    quantify the token saving of the summarization design."""
+    alert = telemetry.alert
+    lines = [
+        f"ALERT: {alert.name} (severity={alert.severity.value}, source={alert.source})",
+        f"  {alert.description}" if alert.description else "  (no description)",
+        f"METRICS ({len(telemetry.metrics)} raw points):",
+    ]
+    lines += [
+        f"  {p.captured_at.isoformat()} {p.name}={p.value:g}" for p in telemetry.metrics
+    ]
+    lines.append(f"LOGS ({len(telemetry.logs)} raw lines):")
+    lines += [f"  [{r.service}] {r.raw or r.message}" for r in telemetry.logs]
+    rendered = "\n".join(lines)
+    log.info(
+        "telemetry_rendered_raw", step="pipeline.summarize",
+        logs_in=len(telemetry.logs), metrics_in=len(telemetry.metrics),
+        chars_out=len(rendered), mode="ablation_raw",
+    )
+    return rendered

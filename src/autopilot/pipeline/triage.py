@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 import structlog
 from pydantic import BaseModel, ConfigDict, Field
@@ -24,7 +24,7 @@ from autopilot.llm.client import QwenClient
 from autopilot.mcp_servers.exposure import filter_servers
 from autopilot.models import EvidenceRef, Incident, RootCauseHypothesis, TriageResult
 from autopilot.pipeline.structured import StructuredOutputError, complete_structured
-from autopilot.pipeline.summarize import summarize_telemetry
+from autopilot.pipeline.summarize import render_raw_telemetry, summarize_telemetry
 from autopilot.tracing import span
 
 if TYPE_CHECKING:
@@ -36,6 +36,11 @@ STEP = "triage.root_cause"
 DEFAULT_MAX_ATTEMPTS = 3  # hard cap on reasoning-tier calls for this stage
 DEFAULT_TOKEN_CAP = 16_000  # hard cap on (input+output) tokens across attempts
 MAX_HYPOTHESES = 5
+
+# "summarized" is the production behavior. "raw" exists ONLY for the benchmark's
+# summarization ablation (mode B): telemetry enters the prompt un-compacted so
+# the token saving of the summarization design can be measured.
+ContextMode = Literal["summarized", "raw"]
 
 
 class TriageError(RuntimeError):
@@ -112,12 +117,16 @@ def _to_result(incident_id: str, parsed: _LLMTriage,
 
 
 async def _gather_context(
-    incident: Incident, scoped: dict[str, FastMCP]
+    incident: Incident, scoped: dict[str, FastMCP],
+    context_mode: ContextMode = "summarized",
 ) -> tuple[str, list[str]]:
     """Enrich via the stage's scoped tools (knowledge + telemetry) — deterministic,
     zero LLM tokens. Returns (prompt context, runbook excerpts) — the excerpts are
     carried on the TriageResult so the toolless planner can reuse them."""
-    summary = summarize_telemetry(incident.telemetry)
+    if context_mode == "raw":
+        summary = render_raw_telemetry(incident.telemetry)  # ablation mode B only
+    else:
+        summary = summarize_telemetry(incident.telemetry)
     top_symptoms = " ".join(
         [incident.telemetry.alert.name, incident.telemetry.alert.description]
         + [r.message for r in incident.telemetry.logs[:5]]
@@ -168,11 +177,12 @@ async def run_triage(
     *,
     max_attempts: int = DEFAULT_MAX_ATTEMPTS,
     token_cap: int = DEFAULT_TOKEN_CAP,
+    context_mode: ContextMode = "summarized",
 ) -> TriageResult:
     scoped = filter_servers("triage", servers)  # telemetry + knowledge; never infra
 
     with span("triage", incident_id=incident.id):
-        context, runbook_notes = await _gather_context(incident, scoped)
+        context, runbook_notes = await _gather_context(incident, scoped, context_mode)
         messages = [
             {"role": "system", "content": _SYSTEM_PROMPT},
             {"role": "user", "content": context},

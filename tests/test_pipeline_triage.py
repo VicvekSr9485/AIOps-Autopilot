@@ -9,6 +9,7 @@ import json
 import pytest
 
 from autopilot.config import LLMConfig
+from autopilot.harness.synthetic import FAULT_IDS, scenario_capture
 from autopilot.llm.client import QwenClient
 from autopilot.mcp_servers.infra import build_infra_server
 from autopilot.mcp_servers.knowledge import build_knowledge_server
@@ -18,7 +19,6 @@ from autopilot.models import TriageResult
 from autopilot.pipeline.ingest import ingest
 from autopilot.pipeline.summarize import summarize_telemetry
 from autopilot.pipeline.triage import TriageError, run_triage
-from scenario_data import FAULT_IDS, scenario_capture
 from test_mcp_servers import FakeController
 
 pytestmark = pytest.mark.anyio

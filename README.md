@@ -29,7 +29,7 @@ make sandbox-up             # start the sandboxed target stack
 | `src/autopilot/mcp_servers/` | MCP tool servers: telemetry, infra/ops, knowledge — see [docs/mcp.md](docs/mcp.md) |
 | `src/autopilot/sandbox/` | Deterministic controller for the sandbox compose stack |
 | `src/autopilot/harness/` | Fault-injection harness (5 faults) with ground truth |
-| `src/autopilot/benchmark/` | Agent-vs-baseline benchmark runner (TODO) |
+| `src/autopilot/benchmark/` | Measurement layer: pipeline vs single-prompt baseline, summarization ablation |
 | `sandbox/` | docker-compose stack the agent is allowed to act on |
 | `dashboard/` | Vite + React UI (stub) |
 | `docs/` | Architecture and judging-facing docs |
@@ -42,6 +42,26 @@ SDK, stdio): **telemetry** (summarized logs/metrics/alerts/traces), **infra**
 **knowledge** (runbook + past-incident vector search, outcome recording).
 Run them with `make mcp-telemetry | mcp-infra | mcp-knowledge`; full tool
 schemas in [docs/mcp.md](docs/mcp.md).
+
+## Benchmark
+
+The measurement layer runs the full agent pipeline **and** a single-prompt
+baseline (same reasoning-tier model, no stages/tools/gate) over the 5 seeded
+faults, with the HITL gate auto-answered from ground truth. It reports
+root-cause accuracy (top-1/top-3), sandbox-verified remediation correctness,
+auto-resolution and false-remediation rates, schema/tool robustness, tokens
+(mean/p95) and estimated cost — plus a summarization ablation quantifying the
+token saving of compacting telemetry before it enters context. Model tiering is
+asserted constant for the whole run and the exact model strings are recorded.
+
+```bash
+make bench        # offline mock mode: no Docker, no tokens (development/CI)
+make bench-real   # FINAL RUN ONLY: real models + real sandbox, spends tokens
+```
+
+Artifacts land in `benchmark_results/`: `results.json` (machine-readable),
+`report.md` (tables), and `traces/*.json` per scenario. All cost figures are
+local estimates — the Qwen Cloud Analytics/Usage page is authoritative.
 
 ## LLM usage
 

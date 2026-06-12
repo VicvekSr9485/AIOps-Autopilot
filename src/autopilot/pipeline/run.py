@@ -12,6 +12,7 @@ through a stage exposure.
 
 from __future__ import annotations
 
+import time
 from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
@@ -30,7 +31,7 @@ from autopilot.models import (
 from autopilot.pipeline.executor import execute
 from autopilot.pipeline.hitl import Approver, GateOutcome, hitl_gate
 from autopilot.pipeline.remediation import plan_remediation
-from autopilot.pipeline.triage import run_triage
+from autopilot.pipeline.triage import ContextMode, run_triage
 from autopilot.pipeline.verify import verify
 from autopilot.tracing import span
 
@@ -61,6 +62,8 @@ class IncidentRunReport(BaseModel):
     rolled_back: bool = False
     outcome_recorded: bool = False
     llm: LLMSpend
+    # wall-clock seconds per stage (diagnosis time = stage_seconds["triage"])
+    stage_seconds: dict[str, float] = Field(default_factory=dict)
 
 
 async def _record_outcome(servers: Mapping[str, FastMCP], incident: Incident,
@@ -96,13 +99,23 @@ async def run_incident(
     confidence_threshold: float = 0.75,
     risk_threshold: float = 0.4,
     verify_interval_s: float = 1.0,
+    context_mode: ContextMode = "summarized",
 ) -> IncidentRunReport:
     meter_start = len(client.meter.records)
     context.incident_id = incident.id  # server-side binding for record_outcome
+    stage_seconds: dict[str, float] = {}
+
+    def _timed(stage: str, t0: float) -> None:
+        stage_seconds[stage] = round(time.perf_counter() - t0, 4)
 
     with span("incident_run", incident_id=incident.id):
-        triage = await run_triage(incident, servers, client)
+        t0 = time.perf_counter()
+        triage = await run_triage(incident, servers, client,
+                                  context_mode=context_mode)
+        _timed("triage", t0)
+        t0 = time.perf_counter()
         proposal = plan_remediation(triage, client)  # structurally toolless
+        _timed("remediation", t0)
         gate = hitl_gate(
             triage.top, proposal, approver,
             confidence_threshold=confidence_threshold,
@@ -115,9 +128,13 @@ async def run_incident(
         resolved = False
 
         if gate.approved:
+            t0 = time.perf_counter()
             execution = await execute(gate.proposal, servers)
+            _timed("execution", t0)
+            t0 = time.perf_counter()
             verification = await verify(incident.id, servers,
                                         interval_s=verify_interval_s)
+            _timed("verification", t0)
             resolved = execution.success and verification.resolved
             if not resolved and gate.proposal.rollback_plan:
                 rollback_result = await execute(
@@ -158,6 +175,7 @@ async def run_incident(
             rolled_back=rolled_back,
             outcome_recorded=recorded,
             llm=_spend_since(client, meter_start),
+            stage_seconds=stage_seconds,
         )
         log.info(
             "incident_run_done", step="pipeline.run", incident_id=incident.id,

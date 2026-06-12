@@ -11,6 +11,7 @@ import json
 
 import pytest
 
+from autopilot.harness.synthetic import FAULT_IDS, scenario_capture
 from autopilot.mcp_servers.context import RunContext
 from autopilot.mcp_servers.infra import build_infra_server
 from autopilot.mcp_servers.knowledge import build_knowledge_server
@@ -22,7 +23,6 @@ from autopilot.pipeline.hitl import StaticApprover, hitl_gate
 from autopilot.pipeline.ingest import ingest
 from autopilot.pipeline.remediation import plan_remediation
 from autopilot.pipeline.run import run_incident
-from scenario_data import FAULT_IDS, scenario_capture
 from test_mcp_servers import FakeController, healthy_snap
 from test_pipeline_triage import ScriptedClient, valid_triage_json
 

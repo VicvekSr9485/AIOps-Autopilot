@@ -1,7 +1,8 @@
 """Synthetic raw captures (compose log text + probe snapshots) mimicking what
 each of the 5 library faults looks like FROM THE OUTSIDE — so ingestion/triage
-tests run offline without Docker. Built from observable symptoms only; no
-ground-truth fault metadata appears anywhere in these captures."""
+tests and the mock-mode benchmark run offline without Docker. Built from
+observable symptoms only; no ground-truth fault metadata appears anywhere in
+these captures."""
 
 from __future__ import annotations
 
@@ -19,6 +20,19 @@ FAULT_IDS = [
     "queue_consumer_stall",
     "expired_credential",
 ]
+
+
+def healthy_snap(**metrics) -> ProbeSnapshot:
+    return ProbeSnapshot(
+        captured_at=T0,
+        healthz_status=200,
+        healthz_body={"status": "ok",
+                      "components": {"db": {"ok": True}, "queue": {"ok": True}}},
+        work_status=200,
+        work_body={"status": "done"},
+        metrics={"requests_total": 1, "errors_total": 0, "work_success_total": 1,
+                 "queue_depth": 0, "jobs_processed": 0, **metrics},
+    )
 
 
 def _log_line(event: str, i: int = 0, service: str = "app", **fields) -> str:

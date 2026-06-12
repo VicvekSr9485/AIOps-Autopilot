@@ -19,6 +19,7 @@ build/
 data/
 logs/
 sandbox/runtime/
+benchmark_results/
 
 # node / dashboard
 node_modules/
