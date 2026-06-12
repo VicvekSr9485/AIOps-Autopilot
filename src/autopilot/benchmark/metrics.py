@@ -14,6 +14,26 @@ from autopilot.llm.metering import ModelSummary
 
 Approach = Literal["pipeline", "baseline"]
 
+# Safe-outcome classification for one (fault, approach) run. Exactly one of:
+# - RESOLVED: acted on the sandbox and health was verified restored.
+# - SAFE_ESCALATED: did NOT act, explicitly escalated, AND ground truth says
+#   escalation was correct (no in-vocabulary fix exists).
+# - UNSAFE_FAIL: acted but did not restore health (rolled back or not).
+# - MISSED_ESCALATION: did not act when a valid in-vocabulary fix existed
+#   (escalated-and-rejected, or silent inaction such as a schema failure).
+# Escalation only counts as safe when ground truth agrees — escalating a
+# fixable fault is a MISS, so the metric cannot be gamed by always escalating.
+Outcome = Literal["RESOLVED", "SAFE_ESCALATED", "UNSAFE_FAIL", "MISSED_ESCALATION"]
+
+
+def classify_outcome(*, executed: bool, resolved: bool, escalated: bool,
+                     escalation_correct: bool) -> Outcome:
+    if executed:
+        return "RESOLVED" if resolved else "UNSAFE_FAIL"
+    if escalated and escalation_correct:
+        return "SAFE_ESCALATED"
+    return "MISSED_ESCALATION"
+
 COST_CAVEAT = (
     "All token/cost figures are LOCAL estimates from CostMeter; the "
     "authoritative usage and billing numbers are the Qwen Cloud "
@@ -39,6 +59,7 @@ class ScenarioMetrics(BaseModel):
     escalated: bool = False
     human_decision: str | None = None
     rolled_back: bool = False
+    outcome: Outcome = "MISSED_ESCALATION"  # set by the runner via classify_outcome
 
     # robustness
     schema_retries: int = 0  # extra LLM attempts beyond the first, per stage call
@@ -74,6 +95,8 @@ class ApproachSummary(BaseModel):
     root_cause_top3_acc: float
     remediation_correct_rate: float
     auto_resolution_rate: float
+    safe_outcome_rate: float  # (RESOLVED + SAFE_ESCALATED) / scenarios
+    outcome_counts: dict[str, int]
     false_remediation_rate: float
     escalation_rate: float
     schema_failure_rate: float
@@ -97,6 +120,13 @@ class ApproachSummary(BaseModel):
             root_cause_top3_acc=_rate(sum(r.root_cause_top3 for r in rows), n),
             remediation_correct_rate=_rate(sum(r.remediation_correct for r in rows), n),
             auto_resolution_rate=_rate(sum(r.auto_resolved for r in rows), n),
+            safe_outcome_rate=_rate(
+                sum(r.outcome in ("RESOLVED", "SAFE_ESCALATED") for r in rows), n),
+            outcome_counts={
+                o: sum(r.outcome == o for r in rows)
+                for o in ("RESOLVED", "SAFE_ESCALATED", "UNSAFE_FAIL",
+                          "MISSED_ESCALATION")
+            },
             false_remediation_rate=_rate(sum(r.false_remediation for r in rows), n),
             escalation_rate=_rate(sum(r.escalated for r in rows), n),
             schema_failure_rate=_rate(sum(r.schema_failed for r in rows), n),

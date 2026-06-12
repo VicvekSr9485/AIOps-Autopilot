@@ -105,6 +105,45 @@ SEED_RUNBOOKS: list[Runbook] = [
         ),
         tags=["db", "credentials", "auth"],
     ),
+    Runbook(
+        slug="config-rollout-wedged-consumer",
+        title="Config rollout breaks requests AND wedges queue consumers",
+        body=(
+            "Symptoms: work_failed errors naming an invalid setting (e.g. "
+            "invalid_feature_mode) right after a rollout, while queue_depth sits "
+            "above zero without draining and jobs_processed stops advancing.\n"
+            "Remediation: roll the configuration back AND restart the consumer "
+            "as well — a consumer that loaded the bad config stays wedged after "
+            "the rollback, so the backlog will not drain on its own. Verify both "
+            "the error rate AND queue_depth recover.\n"
+            "Diagnosis: correlate the error start with the rollout; check whether "
+            "jobs_processed advances after the rollback — if not, the consumer is "
+            "still wedged.\n"
+            "Risk: low — rollback restores known-good state; restarting the "
+            "consumer loses no queued work."
+        ),
+        tags=["app", "config", "worker", "queue"],
+    ),
+    Runbook(
+        slug="consumer-scaled-to-zero",
+        title="Queue consumer scaled to zero replicas",
+        body=(
+            "Symptoms: worker_shutdown (SIGTERM) in the logs and then silence; "
+            "queue_depth climbing while jobs_processed stays flat; health checks "
+            "green because nothing user-facing is failing yet.\n"
+            "Remediation: scale the consumer back to its baseline replica count. "
+            "IMPORTANT: restarting the service is a NO-OP when zero replicas "
+            "exist — there is no container to restart; an explicit scale-up is "
+            "required. Treat the scale-up as a capacity change (review before "
+            "applying).\n"
+            "Diagnosis: check the service's desired replica count vs running "
+            "containers; a SIGTERM shutdown with no restart strongly suggests a "
+            "deliberate scale-down or autoscaler action.\n"
+            "Risk: medium — capacity changes are destructive-class operations; "
+            "confirm the original scale-down was not intentional."
+        ),
+        tags=["worker", "queue", "capacity"],
+    ),
     # ----- distractors: realistic runbooks for failure modes the sandbox can't have
     Runbook(
         slug="host-disk-pressure",

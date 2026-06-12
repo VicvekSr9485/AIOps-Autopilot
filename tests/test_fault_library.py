@@ -9,10 +9,13 @@ EXPECTED_IDS = {
     "downstream_timeout",
     "queue_consumer_stall",
     "expired_credential",
+    "config_rollout_worker_wedge",
+    "db_outage_ambiguous",
+    "worker_scaled_to_zero",
 }
 
 
-def test_library_has_exactly_the_five_faults():
+def test_library_has_exactly_the_eight_faults():
     assert set(FAULTS) == EXPECTED_IDS
 
 

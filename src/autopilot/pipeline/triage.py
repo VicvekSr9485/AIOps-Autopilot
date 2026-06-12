@@ -14,6 +14,7 @@ Cost/safety contract:
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -93,8 +94,35 @@ async def _tool_json(server: FastMCP, tool: str, args: dict[str, Any]) -> dict:
     return json.loads(content[0].text)
 
 
+def _retrieval_query(incident: Incident) -> str:
+    """Distinctive symptom text for knowledge retrieval: digit-normalized
+    deduplication collapses routine lines that differ only in numbers (so rare,
+    telling lines survive), and metric names with their deltas join the query —
+    silent faults identify themselves through metrics, not log text."""
+    alert = incident.telemetry.alert
+    seen: set[str] = set()
+    messages: list[str] = []
+    for record in incident.telemetry.logs:
+        key = re.sub(r"\d+", "N", f"{record.service} {record.message}")
+        if key not in seen:
+            seen.add(key)
+            messages.append(record.message)
+    by_name: dict[str, list[float]] = {}
+    for point in incident.telemetry.metrics:
+        by_name.setdefault(point.name, []).append(point.value)
+    metric_bits = [
+        f"{name} delta={values[-1] - values[0]:+g}"
+        for name, values in by_name.items() if values[-1] != values[0]
+    ] + [
+        f"{name} flat at {values[0]:g}"
+        for name, values in by_name.items()
+        if values[-1] == values[0] and values[0] > 0
+    ]
+    return " ".join([alert.name, alert.description] + messages[:6] + metric_bits)[:700]
+
+
 def _to_result(incident_id: str, parsed: _LLMTriage,
-               consulted_runbooks: list[str]) -> TriageResult:
+               consulted_runbooks: list[str], telemetry_summary: str) -> TriageResult:
     hypotheses = []
     for h in parsed.hypotheses:
         evidence = [
@@ -113,51 +141,56 @@ def _to_result(incident_id: str, parsed: _LLMTriage,
         )
     hypotheses.sort(key=lambda h: h.confidence, reverse=True)  # don't trust LLM order
     return TriageResult(incident_id=incident_id, hypotheses=hypotheses,
-                        consulted_runbooks=consulted_runbooks)
+                        consulted_runbooks=consulted_runbooks,
+                        telemetry_summary=telemetry_summary)
 
 
 async def _gather_context(
     incident: Incident, scoped: dict[str, FastMCP],
     context_mode: ContextMode = "summarized",
-) -> tuple[str, list[str]]:
+) -> tuple[str, list[str], str]:
     """Enrich via the stage's scoped tools (knowledge + telemetry) — deterministic,
-    zero LLM tokens. Returns (prompt context, runbook excerpts) — the excerpts are
-    carried on the TriageResult so the toolless planner can reuse them."""
+    zero LLM tokens. Returns (prompt context, runbook excerpts, telemetry summary);
+    the excerpts and the summary are carried on the TriageResult so the toolless
+    planner plans against the same evidence triage saw."""
+    handoff_summary = summarize_telemetry(incident.telemetry)
     if context_mode == "raw":
         summary = render_raw_telemetry(incident.telemetry)  # ablation mode B only
     else:
-        summary = summarize_telemetry(incident.telemetry)
-    top_symptoms = " ".join(
-        [incident.telemetry.alert.name, incident.telemetry.alert.description]
-        + [r.message for r in incident.telemetry.logs[:5]]
-    )[:500]
+        summary = handoff_summary
+    top_symptoms = _retrieval_query(incident)
 
     sections = [f"INCIDENT {incident.id}\n{summary}"]
     runbook_notes: list[str] = []
+    live_signals: list[str] = []  # live log lines to enrich retrieval queries
 
-    if "knowledge" in scoped:
-        runbooks = await _tool_json(
-            scoped["knowledge"], "search_runbooks", {"query": top_symptoms, "k": 3}
+    # Live telemetry FIRST (primary evidence; in prompts it must precede the
+    # retrieved reference material): current log groups can carry decisive
+    # detail the alert-time capture missed, and a fresh metric window separates
+    # look-alike causes (e.g. backlog growing vs draining).
+    if "telemetry" in scoped:
+        logs_now = await _tool_json(
+            scoped["telemetry"], "query_logs", {"since_minutes": 15, "limit": 8}
         )
-        runbook_notes = [
-            f"{r['title']} (score={r['score']}): {r['excerpt'][:400]}"
-            for r in runbooks["results"]
-        ]
-        sections.append(
-            "RELEVANT RUNBOOKS:\n" + "\n".join(f"- {note}" for note in runbook_notes)
-        )
-        past = await _tool_json(
-            scoped["knowledge"], "search_past_incidents", {"query": top_symptoms, "k": 2}
-        )
-        if past["results"]:
+        if logs_now["groups"]:
+            live_signals = [g["message"][:200] for g in logs_now["groups"][:3]]
             sections.append(
-                "SIMILAR PAST INCIDENTS:\n" + "\n".join(
-                    f"- {p['title']} (score={p['score']}): {p['excerpt'][:300]}"
-                    for p in past["results"]
+                "LIVE LOG GROUPS (last 15m, deduplicated):\n" + "\n".join(
+                    f"  [{g['service']}] x{g['count']}: {g['message'][:200]}"
+                    for g in logs_now["groups"]
                 )
             )
-
-    if "telemetry" in scoped:
+        metrics_now = await _tool_json(
+            scoped["telemetry"], "query_metrics", {"samples": 3, "interval_s": 0}
+        )
+        if metrics_now["series"]:
+            sections.append(
+                "LIVE METRICS (3 samples):\n" + "\n".join(
+                    f"  {s['name']}: first={s['first']:g} last={s['last']:g} "
+                    f"delta={s['last'] - s['first']:+g}"
+                    for s in metrics_now["series"]
+                )
+            )
         alerts_now = await _tool_json(
             scoped["telemetry"], "get_active_alerts", {"samples": 2, "interval_s": 0}
         )
@@ -167,7 +200,30 @@ async def _gather_context(
             f"{[a['name'] for a in alerts_now['alerts']] or 'none'}"
         )
 
-    return "\n\n".join(sections), runbook_notes
+    if "knowledge" in scoped:
+        query = " ".join([top_symptoms, *live_signals])[:700]
+        runbooks = await _tool_json(
+            scoped["knowledge"], "search_runbooks", {"query": query, "k": 3}
+        )
+        runbook_notes = [
+            f"{r['title']} (score={r['score']}): {r['excerpt'][:400]}"
+            for r in runbooks["results"]
+        ]
+        sections.append(
+            "RELEVANT RUNBOOKS:\n" + "\n".join(f"- {note}" for note in runbook_notes)
+        )
+        past = await _tool_json(
+            scoped["knowledge"], "search_past_incidents", {"query": query, "k": 2}
+        )
+        if past["results"]:
+            sections.append(
+                "SIMILAR PAST INCIDENTS:\n" + "\n".join(
+                    f"- {p['title']} (score={p['score']}): {p['excerpt'][:300]}"
+                    for p in past["results"]
+                )
+            )
+
+    return "\n\n".join(sections), runbook_notes, handoff_summary
 
 
 async def run_triage(
@@ -182,7 +238,8 @@ async def run_triage(
     scoped = filter_servers("triage", servers)  # telemetry + knowledge; never infra
 
     with span("triage", incident_id=incident.id):
-        context, runbook_notes = await _gather_context(incident, scoped, context_mode)
+        context, runbook_notes, telemetry_summary = await _gather_context(
+            incident, scoped, context_mode)
         messages = [
             {"role": "system", "content": _SYSTEM_PROMPT},
             {"role": "user", "content": context},
@@ -195,7 +252,7 @@ async def run_triage(
         except StructuredOutputError as e:
             raise TriageError(str(e)) from None
 
-        result = _to_result(incident.id, parsed, runbook_notes)
+        result = _to_result(incident.id, parsed, runbook_notes, telemetry_summary)
         log.info(
             "triage_hypotheses_ranked", step=STEP, incident_id=incident.id,
             hypotheses=len(result.hypotheses),

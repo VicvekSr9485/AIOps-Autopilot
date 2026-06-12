@@ -29,6 +29,12 @@ def _approach_table(approaches: list[ApproachSummary]) -> list[str]:
         ("Remediation correct (sandbox-verified)",
          lambda a: _pct(a.remediation_correct_rate)),
         ("Auto-resolution rate", lambda a: _pct(a.auto_resolution_rate)),
+        ("Safe-outcome rate (RESOLVED + SAFE_ESCALATED)",
+         lambda a: _pct(a.safe_outcome_rate)),
+        ("Outcomes (R/SE/UF/ME)",
+         lambda a: "/".join(str(a.outcome_counts[o]) for o in
+                            ("RESOLVED", "SAFE_ESCALATED", "UNSAFE_FAIL",
+                             "MISSED_ESCALATION"))),
         ("False-remediation rate", lambda a: _pct(a.false_remediation_rate)),
         ("Escalation rate", lambda a: _pct(a.escalation_rate)),
         ("Schema-failure rate", lambda a: _pct(a.schema_failure_rate)),
@@ -68,7 +74,7 @@ def render_markdown(report: BenchmarkReport) -> str:
         "",
         "## Per-scenario results",
         "",
-        "| Fault | Approach | RC top-1 | RC top-3 | Remediation | Resolved |"
+        "| Fault | Approach | RC top-1 | RC top-3 | Remediation | Outcome |"
         " Escalated | Rolled back | Tokens | Est. USD |",
         "|---|---|---|---|---|---|---|---|---|---|",
     ]
@@ -84,7 +90,7 @@ def render_markdown(report: BenchmarkReport) -> str:
         lines.append(
             f"| {s.fault_id} | {s.approach} | {_yn(s.root_cause_top1)} "
             f"| {_yn(s.root_cause_top3)} | {remediation} "
-            f"| {_yn(s.resolved)} | {_yn(s.escalated)} | {_yn(s.rolled_back)} "
+            f"| {s.outcome} | {_yn(s.escalated)} | {_yn(s.rolled_back)} "
             f"| {s.total_tokens} | ${s.est_cost_usd:.4f} |"
         )
 

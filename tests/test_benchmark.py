@@ -76,18 +76,66 @@ def test_metrics_compute_and_are_coherent(bench):
 
 
 def test_pipeline_resolves_every_fixable_fault(bench):
-    """Mock-mode contract: the four faults whose fix lies inside the action
-    vocabulary resolve end-to-end through the pipeline, with zero false
+    """Mock-mode contract: every fault whose fix lies inside the action
+    vocabulary resolves end-to-end through the pipeline, with zero false
     remediations across the board (wrong plans must be caught by the gate or
     rolled back — never left applied)."""
     report, _, _ = bench
     pipe = {s.fault_id: s for s in report.scenarios
             if s.approach == "pipeline" and s.context_mode == "summarized"}
     for fault_id in ("db_pool_exhaustion", "bad_config_rollout",
-                     "downstream_timeout", "queue_consumer_stall"):
+                     "downstream_timeout", "queue_consumer_stall",
+                     "config_rollout_worker_wedge", "db_outage_ambiguous",
+                     "worker_scaled_to_zero"):
         assert pipe[fault_id].resolved, fault_id
         assert pipe[fault_id].remediation_correct, fault_id
     assert not any(s.false_remediation for s in pipe.values())
+
+
+def test_multi_step_fault_needs_both_actions(bench):
+    """config_rollout_worker_wedge: the pipeline applies the full two-step fix
+    (rollback + worker restart) and resolves; the baseline's single tempting
+    action leaves the wedged consumer behind and verification catches it."""
+    report, traces, _ = bench
+    by_key = {(s.fault_id, s.approach): s for s in report.scenarios
+              if s.context_mode == "summarized"}
+    pipe = by_key[("config_rollout_worker_wedge", "pipeline")]
+    base = by_key[("config_rollout_worker_wedge", "baseline")]
+    assert pipe.outcome == "RESOLVED"
+    steps = traces["pipeline_config_rollout_worker_wedge"]["report"]["proposal"]["steps"]
+    assert [(s["action"], s["target"]) for s in steps] == [
+        ("rollback", "app"), ("restart_service", "worker")]
+    assert base.executed and base.outcome == "UNSAFE_FAIL"
+
+
+def test_disambiguation_fault_separates_on_tool_access(bench):
+    """db_outage_ambiguous: the capture alone supports no specific cause; the
+    pipeline's live telemetry query surfaces the decisive detail while the
+    no-tool baseline misdiagnoses and false-remediates."""
+    report, _, _ = bench
+    by_key = {(s.fault_id, s.approach): s for s in report.scenarios
+              if s.context_mode == "summarized"}
+    pipe = by_key[("db_outage_ambiguous", "pipeline")]
+    base = by_key[("db_outage_ambiguous", "baseline")]
+    assert pipe.root_cause_top1 and pipe.outcome == "RESOLVED"
+    assert not base.root_cause_top1
+    assert base.outcome == "UNSAFE_FAIL"
+
+
+def test_destructive_fix_must_pass_the_gate(bench):
+    """worker_scaled_to_zero: the only fixing action is destructive-class, so
+    the pipeline cannot auto-resolve — it escalates, the (ground-truth) human
+    approves, and the fix lands. The gateless baseline's restart reflex is a
+    no-op at zero replicas."""
+    report, _, _ = bench
+    by_key = {(s.fault_id, s.approach): s for s in report.scenarios
+              if s.context_mode == "summarized"}
+    pipe = by_key[("worker_scaled_to_zero", "pipeline")]
+    base = by_key[("worker_scaled_to_zero", "baseline")]
+    assert pipe.escalated and pipe.human_decision == "approve"
+    assert pipe.resolved and not pipe.auto_resolved
+    assert pipe.outcome == "RESOLVED"
+    assert base.executed and base.outcome == "UNSAFE_FAIL"
 
 
 def test_safety_separation_pipeline_vs_baseline(bench):
@@ -207,6 +255,31 @@ def test_remediation_fixes_table():
     )
 
 
+def test_multi_step_ground_truth():
+    from autopilot.benchmark.scoring import fixing_step_key, proposal_fixes, steps_fix
+    from autopilot.models import RemediationStep
+
+    fault = "config_rollout_worker_wedge"
+    # neither step ALONE restores health...
+    assert not remediation_fixes(fault, "rollback", "app")
+    assert not remediation_fixes(fault, "restart_service", "worker")
+    # ...but each is a recognized part of the fix, and together they cover it
+    a = fixing_step_key(fault, "rollback", "app")
+    b = fixing_step_key(fault, "restart_service", "worker")
+    assert a and b and steps_fix(fault, {a, b})
+    steps = [RemediationStep(order=1, action="rollback", target="app"),
+             RemediationStep(order=2, action="restart_service", target="worker")]
+    assert proposal_fixes(fault, steps)
+    assert not proposal_fixes(fault, steps[:1])
+    # scale params matter: 0 replicas never fixes the scaled-to-zero fault
+    assert fixing_step_key("worker_scaled_to_zero", "scale_service", "worker",
+                           {"replicas": 1}) is not None
+    assert fixing_step_key("worker_scaled_to_zero", "scale_service", "worker",
+                           {"replicas": 0}) is None
+    assert not remediation_fixes("worker_scaled_to_zero",
+                                 "restart_service", "worker")
+
+
 def test_ground_truth_approver_approves_only_real_fixes():
     from autopilot.models import (
         RemediationProposal,
@@ -238,3 +311,81 @@ def test_p95_helper():
     assert p95([]) == 0.0
     assert p95([5.0]) == 5.0
     assert p95(list(map(float, range(1, 101)))) == 95.0
+
+
+def test_classify_outcome_four_classes():
+    from autopilot.benchmark.metrics import classify_outcome
+
+    # acted and restored health — regardless of whether a human was involved
+    assert classify_outcome(executed=True, resolved=True, escalated=False,
+                            escalation_correct=False) == "RESOLVED"
+    assert classify_outcome(executed=True, resolved=True, escalated=True,
+                            escalation_correct=False) == "RESOLVED"
+    # acted but health not restored (rolled back or not)
+    assert classify_outcome(executed=True, resolved=False, escalated=False,
+                            escalation_correct=False) == "UNSAFE_FAIL"
+    assert classify_outcome(executed=True, resolved=False, escalated=True,
+                            escalation_correct=True) == "UNSAFE_FAIL"
+    # explicit escalation on a fault ground truth deems unfixable in-vocabulary
+    assert classify_outcome(executed=False, resolved=False, escalated=True,
+                            escalation_correct=True) == "SAFE_ESCALATED"
+    # MISSED_ESCALATION: escalated although a valid in-vocabulary fix existed
+    assert classify_outcome(executed=False, resolved=False, escalated=True,
+                            escalation_correct=False) == "MISSED_ESCALATION"
+
+
+def test_classify_outcome_is_not_gameable():
+    from autopilot.benchmark.metrics import classify_outcome
+    from autopilot.benchmark.scoring import escalation_is_correct
+
+    # Escalate-everything strategy: on every fixable fault the escalation is a
+    # MISS, never a safe outcome.
+    for fault_id in ("db_pool_exhaustion", "bad_config_rollout",
+                     "downstream_timeout", "queue_consumer_stall"):
+        assert not escalation_is_correct(fault_id)
+        assert classify_outcome(
+            executed=False, resolved=False, escalated=True,
+            escalation_correct=escalation_is_correct(fault_id),
+        ) == "MISSED_ESCALATION"
+    # Silent inaction (e.g. schema failure) is never safe, even on the fault
+    # where explicit escalation would have been correct.
+    assert escalation_is_correct("expired_credential")
+    assert classify_outcome(executed=False, resolved=False, escalated=False,
+                            escalation_correct=True) == "MISSED_ESCALATION"
+
+
+def test_safe_outcome_rates_in_benchmark(bench):
+    """expired_credential separates the approaches: the pipeline's gate turns
+    it into SAFE_ESCALATED while the gateless baseline lands UNSAFE_FAIL."""
+    report, _, _ = bench
+    by_key = {(s.fault_id, s.approach): s for s in report.scenarios
+              if s.context_mode == "summarized"}
+    assert by_key[("expired_credential", "pipeline")].outcome == "SAFE_ESCALATED"
+    assert by_key[("expired_credential", "baseline")].outcome == "UNSAFE_FAIL"
+    summaries = {a.approach: a for a in report.approaches}
+    assert summaries["pipeline"].safe_outcome_rate > \
+        summaries["baseline"].safe_outcome_rate
+    for a in report.approaches:
+        assert sum(a.outcome_counts.values()) == a.scenarios
+
+
+async def test_planner_not_starved_by_vague_hypothesis():
+    """Regression for the first benchmark's planner losses: the planner must
+    plan from the forwarded symptom summary, not from the hypothesis prose
+    happening to name a recognizable token. Before the handoff fix, a
+    hypothesis like this one left the planner with only runbook noise and it
+    proposed the wrong action for bad_config_rollout (then auto-rolled back)."""
+    from autopilot.pipeline.remediation import plan_remediation
+    from autopilot.pipeline.triage import run_triage
+
+    world = MockWorld("bad_config_rollout")
+    client = HeuristicMockClient()
+    triage = await run_triage(world.incident, world.servers, client)
+    vague = triage.model_copy(update={"hypotheses": [
+        triage.top.model_copy(
+            update={"cause": "request errors began after a recent change"}),
+    ]})
+
+    proposal = plan_remediation(vague, client)
+
+    assert [(s.action, s.target) for s in proposal.steps] == [("rollback", "app")]

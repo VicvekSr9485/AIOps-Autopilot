@@ -1,6 +1,8 @@
 """Queue consumer: pops jobs from redis and bumps the processed counter."""
 
 import json
+import signal
+import sys
 import time
 from datetime import datetime, timezone
 
@@ -15,7 +17,15 @@ def log(event: str, **fields) -> None:
     print(json.dumps(record), flush=True)
 
 
+def _on_sigterm(signum, frame) -> None:
+    # observable shutdown trace: a scaled-away/stopped consumer is
+    # distinguishable in logs from one that is merely frozen
+    log("worker_shutdown", signal="SIGTERM")
+    sys.exit(0)
+
+
 def main() -> None:
+    signal.signal(signal.SIGTERM, _on_sigterm)
     log("worker_started")
     while True:
         try:

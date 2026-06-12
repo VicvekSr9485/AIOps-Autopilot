@@ -30,8 +30,13 @@ from autopilot.benchmark.metrics import (
     BenchmarkReport,
     CostSummary,
     ScenarioMetrics,
+    classify_outcome,
 )
-from autopilot.benchmark.scoring import GroundTruthApprover, score_root_cause
+from autopilot.benchmark.scoring import (
+    GroundTruthApprover,
+    escalation_is_correct,
+    score_root_cause,
+)
 from autopilot.llm.client import QwenClient
 from autopilot.models import Incident, utcnow
 from autopilot.pipeline.remediation import PlanningError
@@ -145,6 +150,10 @@ async def _run_pipeline_scenario(
         auto_resolved=report.resolved and report.gate.route == "auto",
         false_remediation=executed and not report.resolved,
         escalated=report.gate.route == "human",
+        outcome=classify_outcome(
+            executed=executed, resolved=report.resolved,
+            escalated=report.gate.route == "human",
+            escalation_correct=escalation_is_correct(fault_id)),
         human_decision=report.gate.human_action,
         rolled_back=report.rolled_back,
         invalid_tool_calls=_count_invalid_tool_calls(report.execution),
@@ -190,7 +199,10 @@ async def _run_baseline_scenario(
         resolved=resolved,
         auto_resolved=resolved,  # the baseline never has a human in the loop
         false_remediation=executed and not resolved,
-        escalated=False,
+        escalated=False,  # the baseline has no escalation path at all
+        outcome=classify_outcome(
+            executed=executed, resolved=resolved, escalated=False,
+            escalation_correct=escalation_is_correct(fault_id)),
         schema_failed=result.schema_failed,
         invalid_tool_calls=application.invalid_tool_calls if application else 0,
         steps_to_diagnosis=sum(

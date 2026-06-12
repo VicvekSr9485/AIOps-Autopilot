@@ -19,6 +19,9 @@ FAULT_IDS = [
     "downstream_timeout",
     "queue_consumer_stall",
     "expired_credential",
+    "config_rollout_worker_wedge",
+    "db_outage_ambiguous",
+    "worker_scaled_to_zero",
 ]
 
 
@@ -105,6 +108,44 @@ def scenario_capture(fault_id: str) -> tuple[str, list[ProbeSnapshot]]:
                  for i in range(5)]
         snaps = [_snap(i, healthz=503, work=500, db_ok=False, db_error=err,
                        work_body={"error": f"db error: {err}"}) for i in range(4)]
+        return "\n".join(logs), snaps
+
+    if fault_id == "config_rollout_worker_wedge":
+        # Bad rollout blocks all work requests AND wedged the consumer: the
+        # backlog enqueued before the rollout sits stuck (depth flat above
+        # zero, jobs_processed flat) while producers fail at the config check.
+        logs = [_log_line("work_failed", i, reason="invalid_feature_mode",
+                          feature_mode="turbo_v2") for i in range(8)]
+        snaps = [_snap(i, work=500,
+                       work_body={"error": "invalid feature_mode 'turbo_v2'"},
+                       metrics=_metrics(i, queue_depth=12, jobs_processed=37))
+                 for i in range(4)]
+        return "\n".join(logs), snaps
+
+    if fault_id == "db_outage_ambiguous":
+        # Degraded alert-time observability: the capture carries only generic
+        # driver-level connection errors. The decisive FATAL detail exists
+        # solely in the db service's LIVE logs (telemetry query during triage)
+        # — a no-tool reader of this bundle genuinely cannot disambiguate
+        # pool exhaustion from, say, a credential failure.
+        err = "db connection failure"
+        logs = [_log_line("healthz_component_failed", i, component="db", error=err)
+                for i in range(4)]
+        logs += [_log_line("work_failed", i + 4, reason="db_error", error=err)
+                 for i in range(6)]
+        snaps = [_snap(i, healthz=503, work=500, db_ok=False, db_error=err,
+                       work_body={"error": f"db error: {err}"}) for i in range(4)]
+        return "\n".join(logs), snaps
+
+    if fault_id == "worker_scaled_to_zero":
+        # Probes stay green; the worker logged a SIGTERM shutdown and went
+        # silent; the backlog grows with nothing consuming.
+        logs = [_log_line("work_done", i, items=50 + i) for i in range(5)]
+        logs.append(_log_line("worker_shutdown", 5, service="worker",
+                              signal="SIGTERM"))
+        snaps = [_snap(i, metrics=_metrics(i, queue_depth=3 + 4 * i,
+                                           jobs_processed=52))
+                 for i in range(4)]
         return "\n".join(logs), snaps
 
     raise KeyError(f"unknown fault id {fault_id!r}")

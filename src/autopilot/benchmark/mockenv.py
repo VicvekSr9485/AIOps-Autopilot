@@ -15,10 +15,11 @@ summarization ablation produces genuinely different token figures in mock mode.
 from __future__ import annotations
 
 import json
+import re
 
 import structlog
 
-from autopilot.benchmark.scoring import remediation_fixes
+from autopilot.benchmark.scoring import fixing_step_key, steps_fix
 from autopilot.config import LLMConfig
 from autopilot.harness.synthetic import healthy_snap, scenario_capture
 from autopilot.llm.client import QwenClient
@@ -38,35 +39,81 @@ from autopilot.sandbox.controller import (
 log = structlog.get_logger("autopilot.benchmark.mockenv")
 
 
+# Live db log lines that exist ONLY post-capture: the decisive detail for the
+# tool-disambiguation fault, reachable through a live query_logs call.
+_AMBIGUOUS_LIVE_DB_LOGS = "\n".join(
+    f"autopilot-sbx-db  | 2026-06-12T12:05:0{i}.000000000Z FATAL:  remaining "
+    "connection slots are reserved for roles with privileges"
+    for i in range(3)
+)
+
+
 class MockSandboxController(SandboxController):
     """Fault-aware offline stand-in: never touches Docker; flips from the
-    fault's synthetic symptoms to healthy once a genuinely-fixing action lands."""
+    fault's synthetic symptoms to healthy once the applied actions cover a full
+    fixing alternative (scoring.REQUIRED_FIX_STEPS — multi-step faults need
+    every step). Partial fixes surface honest intermediate states, and metric
+    series extend monotonically so re-probing cannot dodge a divergence."""
 
     def __init__(self, fault_id: str):
         super().__init__()
         self.fault_id = fault_id
-        self.fixed = False
         self.calls: list[tuple] = []
+        self._satisfied: set[tuple[str, str]] = set()
         self._log_text, self._fault_snaps = scenario_capture(fault_id)
         self._probe_i = 0
         self._config = self.default_app_config()
-        if fault_id == "bad_config_rollout":
+        if fault_id in ("bad_config_rollout", "config_rollout_worker_wedge"):
             # mirror the injected state, else the rollback tool would no-op
             self._config["feature_mode"] = "turbo_v2"
 
     def _compose(self, *args, check=True):
         raise AssertionError("docker compose must never run in the mock benchmark")
 
+    @property
+    def fixed(self) -> bool:
+        return steps_fix(self.fault_id, self._satisfied)
+
+    def _mark(self, action: str, target: str, params: dict | None = None) -> None:
+        key = fixing_step_key(self.fault_id, action, target, params)
+        if key is not None:
+            self._satisfied.add(key)
+
     # ------------------------------------------------------------ observation
+
+    def _extend_metrics(self, snap: ProbeSnapshot, steps_past_end: int
+                        ) -> ProbeSnapshot:
+        """Continue the capture's metric trend instead of cycling: an unfixed
+        divergence keeps diverging, a stuck backlog stays stuck."""
+        if not snap.metrics or len(self._fault_snaps) < 2:
+            return snap
+        prev = self._fault_snaps[-2]
+        if not prev.metrics:
+            return snap
+        extended = {
+            name: value + steps_past_end * (value - prev.metrics.get(name, value))
+            for name, value in snap.metrics.items()
+        }
+        return snap.model_copy(update={"metrics": extended})
 
     def probe(self) -> ProbeSnapshot:
         if self.fixed:
             return healthy_snap()
-        snap = self._fault_snaps[self._probe_i % len(self._fault_snaps)]
+        if (self.fault_id == "config_rollout_worker_wedge"
+                and ("rollback", "app") in self._satisfied):
+            # honest partial state: config rolled back so probes go green, but
+            # the wedged consumer still is not draining the backlog
+            return healthy_snap(queue_depth=12, jobs_processed=37)
+        snaps = self._fault_snaps
+        i = self._probe_i
         self._probe_i += 1
-        return snap
+        if i < len(snaps):
+            return snaps[i]
+        return self._extend_metrics(snaps[-1], i - len(snaps) + 1)
 
     def logs(self, since=None) -> str:
+        if self.fault_id == "db_outage_ambiguous" and not self.fixed:
+            return f"{self._log_text}\n{_AMBIGUOUS_LIVE_DB_LOGS}"
         return self._log_text
 
     def timed_request(self, path: str) -> RequestObservation:
@@ -80,14 +127,11 @@ class MockSandboxController(SandboxController):
 
     def restart(self, service: str) -> None:
         self.calls.append(("restart", service))
-        if remediation_fixes(self.fault_id, "restart_service", service):
-            self.fixed = True
+        self._mark("restart_service", service)
 
     def scale(self, service: str, replicas: int) -> None:
         self.calls.append(("scale", service, replicas))
-        if remediation_fixes(self.fault_id, "scale_service", service,
-                             {"replicas": replicas}):
-            self.fixed = True
+        self._mark("scale_service", service, {"replicas": replicas})
 
     def read_app_config(self) -> dict:
         return dict(self._config)
@@ -96,9 +140,7 @@ class MockSandboxController(SandboxController):
         self._config = dict(config)
         self.calls.append(("write_app_config", json.dumps(config, sort_keys=True)))
         # rollback/apply_config both land here; fixing is judged on final state
-        if (self.fault_id == "bad_config_rollout"
-                and config.get("feature_mode") == "standard"):
-            self.fixed = True
+        self._mark("apply_config", "app", config)
 
 
 class MockWorld:
@@ -139,32 +181,91 @@ _CAUSES: dict[str, tuple[str, float]] = {
     # ambiguous on purpose: looks db-shaped, model is unsure -> escalation path
     "expired_credential": (
         "database rejecting connections: password authentication failing", 0.55),
+    "config_rollout_worker_wedge": (
+        "config rollout set feature_mode to an invalid value and left the queue "
+        "consumer wedged; the backlog is stuck undrained", 0.85),
+    "worker_scaled_to_zero": (
+        "worker consumers were scaled away (SIGTERM shutdown observed); queue "
+        "backlog growing with no consumers running", 0.8),
+    # db_outage_ambiguous never appears here: once the live db logs reveal the
+    # connection-slot FATALs it is diagnosed AS pool exhaustion; without them
+    # (the no-tool baseline) the symptoms support no specific cause at all.
 }
 
-_PLANS: dict[str, dict] = {
-    "db_pool_exhaustion": {"action": "restart_service", "target": "db"},
-    "bad_config_rollout": {"action": "rollback", "target": "app"},
-    "downstream_timeout": {"action": "restart_service", "target": "downstream"},
-    "queue_consumer_stall": {"action": "restart_service", "target": "worker"},
-    "expired_credential": {"action": "restart_service", "target": "db"},  # wrong fix
+# Base plans: the action an unaided reader of the symptoms would reach for.
+_PLANS: dict[str, list[dict]] = {
+    "db_pool_exhaustion": [{"action": "restart_service", "target": "db"}],
+    "bad_config_rollout": [{"action": "rollback", "target": "app"}],
+    "downstream_timeout": [{"action": "restart_service", "target": "downstream"}],
+    "queue_consumer_stall": [{"action": "restart_service", "target": "worker"}],
+    "expired_credential": [{"action": "restart_service", "target": "db"}],  # wrong fix
+    # tempting-but-incomplete: fixes the loud half, leaves the wedged consumer
+    "config_rollout_worker_wedge": [{"action": "rollback", "target": "app"}],
+    # tempting reflex: restart the missing worker (a no-op at zero replicas)
+    "worker_scaled_to_zero": [{"action": "restart_service", "target": "worker"}],
 }
+
+# Operational knowledge that only arrives via retrieved runbooks: when the
+# marker phrase from the matching runbook is present in the prompt's runbook
+# section, the plan is refined. Models a planner following runbook guidance —
+# the no-retrieval baseline never sees these.
+_RUNBOOK_REFINED_PLANS: dict[str, tuple[str, list[dict]]] = {
+    "config_rollout_worker_wedge": (
+        "restart the consumer as well",
+        [{"action": "rollback", "target": "app"},
+         {"action": "restart_service", "target": "worker"}],
+    ),
+    "worker_scaled_to_zero": (
+        "scale the consumer back",
+        [{"action": "scale_service", "target": "worker", "params": {"replicas": 1}}],
+    ),
+}
+
+
+def _metric_series(text: str, name: str) -> list[float]:
+    """Pull a metric's observed values out of prompt text, across the formats
+    the prompts actually use: 'name: first=A last=B' (summaries/live sections)
+    and 'name=V' point dumps (the ablation's raw rendering)."""
+    pairs = re.findall(rf"{name}: first=([\d.]+) last=([\d.]+)", text)
+    if pairs:
+        return [float(v) for pair in pairs for v in pair]
+    return [float(v) for v in re.findall(rf"{name}=([\d.]+)", text)]
+
+
+def _queue_signature(text: str) -> str | None:
+    """'growing' | 'stuck' | None, from observable metric text only."""
+    depth = _metric_series(text, "queue_depth")
+    processed = _metric_series(text, "jobs_processed")
+    if len(depth) < 2 or len(processed) < 2 or processed[-1] != processed[0]:
+        return None
+    if depth[-1] > depth[0]:
+        return "growing"
+    if depth[-1] == depth[0] and depth[-1] > 0:
+        return "stuck"
+    return None
 
 
 def _infer_fault(text: str) -> str | None:
-    """Symptom keywords -> fault guess. Matches both raw telemetry tokens (the
-    triage/baseline prompts) and hypothesis phrasings (the planner prompt, whose
-    input is _CAUSES text rather than log lines). Observable signals only."""
+    """Symptom keywords/patterns -> fault guess. Matches the telemetry-derived
+    sections of triage/baseline/planner prompts (summaries, live log groups,
+    live metric windows) and hypothesis phrasings. Observable signals only —
+    most-specific rules first."""
     t = text.lower()
+    queue_sig = _queue_signature(t)
     if "password authentication" in t or "credential" in t:
         return "expired_credential"
     if "connection slots" in t or "too many clients" in t or "idle session" in t:
         return "db_pool_exhaustion"
+    if "feature_mode" in t and (queue_sig is not None or "wedged" in t):
+        return "config_rollout_worker_wedge"
     if "feature_mode" in t:
         return "bad_config_rollout"
     if "downstream" in t and ("timeout" in t or "time out" in t):
         return "downstream_timeout"
-    if ("queue_depth" in t and "jobs_processed" in t) or \
-            ("consumer" in t and "stall" in t):
+    if queue_sig == "growing" and ("worker_shutdown" in t or "sigterm" in t
+                                   or "scaled" in t):
+        return "worker_scaled_to_zero"
+    if queue_sig == "growing" or ("consumer" in t and "stall" in t):
         return "queue_consumer_stall"
     return None
 
@@ -186,14 +287,19 @@ def _triage_json(fault: str | None) -> str:
     ]})
 
 
-def _plan_steps(fault: str | None) -> list[dict]:
-    step = _PLANS.get(fault or "", {"action": "restart_service", "target": "app"})
-    return [{**step, "params": {}, "expected_effect": "service converges to healthy"}]
+def _plan_steps(fault: str | None, runbook_text: str = "") -> list[dict]:
+    steps = _PLANS.get(fault or "", [{"action": "restart_service", "target": "app"}])
+    if fault in _RUNBOOK_REFINED_PLANS:
+        marker, refined = _RUNBOOK_REFINED_PLANS[fault]
+        if marker in runbook_text.lower():
+            steps = refined
+    return [{"params": {}, "expected_effect": "service converges to healthy", **s}
+            for s in steps]
 
 
-def _plan_json(fault: str | None) -> str:
+def _plan_json(fault: str | None, runbook_text: str = "") -> str:
     return json.dumps({
-        "steps": _plan_steps(fault),
+        "steps": _plan_steps(fault, runbook_text),
         "rollback_plan": [{"action": "rollback", "target": "app", "params": {},
                            "expected_effect": "restore canonical config"}],
         "risk_score": 0.2,
@@ -206,7 +312,7 @@ def _baseline_json(fault: str | None) -> str:
     return json.dumps({
         "root_cause": cause,
         "confidence": confidence,
-        "steps": _plan_steps(fault),
+        "steps": _plan_steps(fault),  # no retrieval: base plans only, by contract
     })
 
 
@@ -224,16 +330,24 @@ class HeuristicMockClient(QwenClient):
 
     def _mock_complete(self, model, messages):
         system = messages[0].get("content", "")
-        blob = " ".join(m.get("content", "") for m in messages[1:])
-        # infer from the incident's own telemetry/hypothesis only — runbook
-        # excerpts in the prompt may describe OTHER faults' symptoms
-        blob = blob.split("RELEVANT RUNBOOKS", 1)[0]  # triage prompt section
+        full = " ".join(m.get("content", "") for m in messages[1:])
+        # The mock models a competent reader: the FAULT is inferred from the
+        # prompt's PRIMARY-EVIDENCE sections (incident telemetry/symptoms), not
+        # from retrieved runbook excerpts, which legitimately describe OTHER
+        # faults' symptoms. Since the planner-handoff fix, every prompt's
+        # primary section carries the actual symptom summary — inference no
+        # longer depends on hypothesis prose happening to name the right token.
+        # The runbook section is then consulted separately for PLAN refinement
+        # (following guidance that matches the diagnosed fault), exactly the
+        # role runbooks play for a real planner.
+        blob = full.split("RELEVANT RUNBOOKS", 1)[0]  # triage prompt section
         blob = blob.split("RUNBOOK GUIDANCE", 1)[0]  # planner prompt section
         fault = _infer_fault(blob)
         if "root-cause analyst" in system:
             text = _triage_json(fault)
         elif "remediation planner" in system:
-            text = _plan_json(fault)
+            runbook_text = full.split("RUNBOOK GUIDANCE", 1)
+            text = _plan_json(fault, runbook_text[1] if len(runbook_text) > 1 else "")
         elif "single-prompt" in system:
             text = _baseline_json(fault)
         else:  # pragma: no cover - no other prompts exist

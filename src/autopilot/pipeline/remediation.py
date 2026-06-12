@@ -1,10 +1,16 @@
-"""Remediation planner: top hypothesis + runbooks already retrieved by triage
--> schema-validated RemediationProposal (steps mapped to Infra/Ops actions,
-rollback plan, risk/blast-radius).
+"""Remediation planner: triage's evidence handoff (summarized telemetry + top
+hypothesis + runbooks) -> schema-validated RemediationProposal (steps mapped to
+Infra/Ops actions, rollback plan, risk/blast-radius).
 
 Stage-scoping is STRUCTURAL here: this function takes no servers argument at
 all (exposure maps planner -> no tools); runbook context arrives on the
 TriageResult instead of being re-retrieved (cost rule: never re-ask).
+
+Input contract (the fix for the first benchmark's planner losses): the prompt
+leads with the INCIDENT SYMPTOMS the triage stage actually gathered — the
+planner must never depend on the hypothesis prose alone, and retrieved runbook
+text is explicitly labeled as reference material that may be irrelevant, so it
+cannot outweigh primary evidence.
 
 Uses the `default` model (qwen3.7-plus) — the reasoning tier belongs to triage
 alone. Server-side discipline mirrors the rest of the pipeline: incident_id and
@@ -113,13 +119,19 @@ def plan_remediation(
     top = triage.top
     with span("remediation", incident_id=triage.incident_id):
         evidence = "; ".join(
-            f"{e.kind}:{e.pointer} ({e.excerpt[:120]})" for e in top.evidence
+            f"{e.kind}:{e.pointer} ({e.excerpt[:300]})" for e in top.evidence
         ) or "none cited"
         runbooks = "\n".join(f"- {note}" for note in triage.consulted_runbooks) or "- none"
+        symptoms = triage.telemetry_summary or "(no telemetry summary forwarded)"
+        # Primary evidence first (symptoms, then the hypothesis built on them);
+        # retrieved runbooks last and explicitly marked as fallible reference.
         user = (
+            f"INCIDENT SYMPTOMS (summarized telemetry gathered during triage):\n"
+            f"{symptoms}\n\n"
             f"ROOT-CAUSE HYPOTHESIS (confidence {top.confidence:.2f}): {top.cause}\n"
             f"Reasoning: {top.reasoning_summary}\nEvidence: {evidence}\n\n"
-            f"RUNBOOK GUIDANCE (retrieved during triage):\n{runbooks}"
+            f"RUNBOOK GUIDANCE (retrieved reference material — relevance is "
+            f"approximate; trust the symptoms above when they disagree):\n{runbooks}"
         )
         messages = [
             {"role": "system", "content": _SYSTEM_PROMPT},

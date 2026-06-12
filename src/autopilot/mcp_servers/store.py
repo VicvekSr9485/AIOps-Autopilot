@@ -1,11 +1,15 @@
 """Local knowledge store: runbooks + past incidents in SQLite with vector search.
 
 Embeddings are deterministic local hashing vectors (lowercased word tokens →
-sha256-bucketed signed counts, L2-normalized): zero network, zero tokens, stable
-across runs — swap `embed()` for a real embedding model later without touching
-the schema. KNN uses the sqlite-vec extension when the interpreter can load
-SQLite extensions; otherwise it falls back to a pure-Python cosine scan over the
-same rows (identical scores — vectors are normalized, so 1 - d²/2 == cosine).
+sha256-bucketed signed sublinear counts, L2-normalized, stopwords dropped):
+zero network, zero tokens, stable across runs — swap `embed()` for a real
+embedding model later without touching the schema. The stopword filter and
+sqrt term weighting exist because raw counts let generic prose tokens drown
+the distinctive signature tokens that actually identify a runbook; 1024
+buckets keep hash-collision noise below the real signal. KNN uses the
+sqlite-vec extension when the interpreter can load SQLite extensions;
+otherwise it falls back to a pure-Python cosine scan over the same rows
+(identical scores — vectors are normalized, so 1 - d²/2 == cosine).
 """
 
 from __future__ import annotations
@@ -24,9 +28,21 @@ from pydantic import BaseModel, Field
 
 log = structlog.get_logger("autopilot.mcp.store")
 
-EMBED_DIM = 256
+EMBED_DIM = 1024
 DATA_DIR = Path(__file__).resolve().parents[3] / "data"
 DEFAULT_DB_PATH = DATA_DIR / "knowledge.db"
+
+# Common prose words carrying no retrieval signal; tokens like service names,
+# metric names, and error phrases are what should drive similarity.
+STOPWORDS = frozenset("""
+a an and are as at be been but by can cannot could did do does for from had
+has have how if in into is it its may might more most no not of on or our out
+over so than that the their then there these they this to until up was we what
+when where whether which while will with would you your after again also
+before
+""".split())
+
+VEC_TABLE = f"vec_index_{EMBED_DIM}"
 
 DocKind = Literal["runbook", "incident"]
 
@@ -45,12 +61,18 @@ class ScoredDoc(StoredDoc):
 
 
 def embed(text: str, dim: int = EMBED_DIM) -> list[float]:
-    """Deterministic hashing embedding: signed bag-of-words, L2-normalized."""
-    vec = [0.0] * dim
+    """Deterministic hashing embedding: signed bag-of-words with sublinear
+    (sqrt) term weighting and stopword removal, L2-normalized."""
+    counts: dict[str, int] = {}
     for token in re.findall(r"[a-z0-9_]+", text.lower()):
+        if token not in STOPWORDS:
+            counts[token] = counts.get(token, 0) + 1
+    vec = [0.0] * dim
+    for token, count in counts.items():
         digest = hashlib.sha256(token.encode()).digest()
         idx = ((digest[0] << 8) | digest[1]) % dim
-        vec[idx] += 1.0 if digest[2] & 1 else -1.0
+        weight = math.sqrt(count)
+        vec[idx] += weight if digest[2] & 1 else -weight
     norm = math.sqrt(sum(v * v for v in vec)) or 1.0
     return [v / norm for v in vec]
 
@@ -105,8 +127,10 @@ class KnowledgeStore:
             )"""
         )
         if self.vec_enabled:
+            # dim-suffixed table: changing EMBED_DIM gets a fresh index instead
+            # of colliding with vectors written under the old dimension
             self._db.execute(
-                f"CREATE VIRTUAL TABLE IF NOT EXISTS vec_index "
+                f"CREATE VIRTUAL TABLE IF NOT EXISTS {VEC_TABLE} "
                 f"USING vec0(embedding float[{EMBED_DIM}])"
             )
         self._db.commit()
@@ -129,7 +153,7 @@ class KnowledgeStore:
                 (title, body, tags_json, vec_blob, doc_id),
             )
             if self.vec_enabled:
-                self._db.execute("DELETE FROM vec_index WHERE rowid = ?", (doc_id,))
+                self._db.execute(f"DELETE FROM {VEC_TABLE} WHERE rowid = ?", (doc_id,))
         else:
             cur = self._db.execute(
                 "INSERT INTO documents (kind, key, title, body, tags, embedding) "
@@ -139,7 +163,7 @@ class KnowledgeStore:
             doc_id, created = cur.lastrowid, True
         if self.vec_enabled:
             self._db.execute(
-                "INSERT INTO vec_index (rowid, embedding) VALUES (?, ?)", (doc_id, vec_blob)
+                f"INSERT INTO {VEC_TABLE} (rowid, embedding) VALUES (?, ?)", (doc_id, vec_blob)
             )
         self._db.commit()
         return doc_id, created
@@ -159,7 +183,7 @@ class KnowledgeStore:
     def _search_vec(self, query_vec: list[float], kind: DocKind, k: int) -> list[ScoredDoc]:
         # Over-fetch (vec0 can't filter by kind), then join + filter.
         rows = self._db.execute(
-            "SELECT rowid, distance FROM vec_index WHERE embedding MATCH ? "
+            f"SELECT rowid, distance FROM {VEC_TABLE} WHERE embedding MATCH ? "
             "ORDER BY distance LIMIT ?",
             (_pack(query_vec), k * 4 + 8),
         ).fetchall()
@@ -181,6 +205,8 @@ class KnowledgeStore:
         out: list[ScoredDoc] = []
         for doc_id, doc_kind, key, title, body, tags, blob in rows:
             doc_vec = _unpack(blob)
+            if len(doc_vec) != len(query_vec):
+                continue  # stale row from an older EMBED_DIM; heals on next add()
             score = sum(a * b for a, b in zip(query_vec, doc_vec, strict=True))
             out.append(ScoredDoc(id=doc_id, kind=doc_kind, key=key, title=title,
                                  body=body, tags=json.loads(tags), score=score))

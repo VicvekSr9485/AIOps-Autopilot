@@ -98,6 +98,10 @@ class TriageResult(BaseModel):
     incident_id: str
     hypotheses: list[RootCauseHypothesis] = Field(min_length=1)
     consulted_runbooks: list[str] = Field(default_factory=list)  # handed to the planner
+    # The summarized incident telemetry triage reasoned over, forwarded so the
+    # toolless planner plans against actual symptoms — not just hypothesis prose.
+    # Always the summarized form, even when triage ran in the ablation's raw mode.
+    telemetry_summary: str = ""
     generated_at: datetime = Field(default_factory=utcnow)
 
     @property

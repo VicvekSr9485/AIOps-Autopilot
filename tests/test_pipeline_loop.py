@@ -112,6 +112,54 @@ async def test_planner_is_structurally_toolless():
     assert "RUNBOOK GUIDANCE" in client.prompts[1][1]["content"]
 
 
+async def test_verifier_catches_silent_backlog():
+    """Green probes alone must not verify resolution: a queue that grows — or
+    sits stuck above zero — while jobs_processed stays flat fails the
+    backlog_draining check (this is what catches the baseline's partial fix on
+    the multi-step fault)."""
+    from autopilot.pipeline.verify import verify
+
+    def servers_for(snaps):
+        return {"telemetry": build_telemetry_server(FakeController(snapshots=snaps))}
+
+    growing = [healthy_snap(queue_depth=4 + 3 * i, jobs_processed=9)
+               for i in range(8)]
+    result = await verify("inc-grow", servers_for(growing), interval_s=0.0)
+    assert not result.resolved
+    assert any(c.name == "backlog_draining" and not c.passed for c in result.checks)
+
+    stuck = [healthy_snap(queue_depth=7, jobs_processed=9) for _ in range(8)]
+    result = await verify("inc-stuck", servers_for(stuck), interval_s=0.0)
+    assert not result.resolved
+
+    draining = [healthy_snap(queue_depth=max(0, 21 - 3 * i), jobs_processed=9 + i)
+                for i in range(8)]
+    result = await verify("inc-drain", servers_for(draining), interval_s=0.0)
+    assert result.resolved
+
+
+async def test_planner_receives_triage_evidence_handoff():
+    """Planner-handoff contract (fix for the first benchmark's planner losses):
+    the planner prompt leads with the symptom summary triage gathered, the
+    hypothesis comes second, and retrieved runbook text comes last, labeled as
+    fallible reference material — primary evidence outranks retrieval noise."""
+    from autopilot.pipeline.triage import run_triage
+
+    world = World("bad_config_rollout")
+    client = ScriptedClient([valid_triage_json(), plan_json()])
+    triage = await run_triage(world.incident, world.servers, client)
+    assert "invalid_feature_mode" in triage.telemetry_summary  # populated
+
+    plan_remediation(triage, client)
+    prompt = client.prompts[1][1]["content"]
+    sym = prompt.index("INCIDENT SYMPTOMS")
+    hyp = prompt.index("ROOT-CAUSE HYPOTHESIS")
+    runbook = prompt.index("RUNBOOK GUIDANCE")
+    assert sym < hyp < runbook
+    assert triage.telemetry_summary in prompt
+    assert "relevance is approximate" in prompt  # runbooks marked as reference
+
+
 @pytest.mark.parametrize("action,params", [
     ("apply_config", {"feature_mode": "standard"}),
     ("scale_service", {"replicas": 0}),

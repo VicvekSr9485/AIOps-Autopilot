@@ -57,6 +57,15 @@ smaller action surface (a stage that cannot see a tool cannot call it).
 | `executor` | infra/ops only (post-HITL) |
 | `verification` | telemetry only |
 
+The invariant behind the table: **only the executor may call mutating
+(Infra/Ops) tools**. Triage and verification observe; the planner holds no
+tools at all — instead of read-only access, the evidence it needs (summarized
+telemetry, cited evidence, retrieved runbooks) is forwarded on `TriageResult`,
+which is both cheaper (no re-querying) and a stronger guarantee (nothing to
+misuse). Triage's tool use is deterministic pipeline code, not a model loop:
+live log groups, a fresh metric window, an alert re-check, and retrieval run
+before its one reasoning-tier call.
+
 Unknown stages raise; new stages must be added to `STAGE_SERVERS` explicitly —
 the default is no tools.
 

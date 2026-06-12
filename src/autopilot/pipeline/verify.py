@@ -1,7 +1,10 @@
 """Verifier: re-check sandbox signals after execution and decide resolved-or-not.
 
 Stage-scoped to telemetry only (exposure: verification -> telemetry): the
-verifier observes through get_active_alerts probes — it cannot act.
+verifier observes through get_active_alerts/query_metrics probes — it cannot
+act. Checks: every probe healthy, no active alerts, AND the backlog draining
+(silent faults keep probes green; a queue that grows — or sits stuck above
+zero — while jobs_processed is flat means the incident is NOT resolved).
 """
 
 from __future__ import annotations
@@ -50,6 +53,24 @@ async def verify(
                 detail=", ".join(a["name"] for a in alerts["alerts"]) or "none firing",
             ),
         ]
+
+        content = await telemetry.call_tool(
+            "query_metrics",
+            {"names": ["queue_depth", "jobs_processed"],
+             "samples": samples, "interval_s": interval_s},
+        )
+        series = {s["name"]: s for s in json.loads(content[0].text)["series"]}
+        depth, processed = series.get("queue_depth"), series.get("jobs_processed")
+        if depth and processed:
+            growing = depth["delta"] > 0 and processed["delta"] == 0
+            stuck = (depth["last"] > 0 and depth["delta"] == 0
+                     and processed["delta"] == 0)
+            checks.append(VerificationCheck(
+                name="backlog_draining",
+                passed=not growing and not stuck,
+                detail=(f"queue_depth {depth['first']:g}->{depth['last']:g}, "
+                        f"jobs_processed delta {processed['delta']:+g}"),
+            ))
         result = VerificationResult(
             incident_id=incident_id,
             resolved=all(c.passed for c in checks),

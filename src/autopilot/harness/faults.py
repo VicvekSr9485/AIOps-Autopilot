@@ -1,4 +1,4 @@
-"""Fault library: 5 injectable faults with ground-truth metadata.
+"""Fault library: 8 injectable faults with ground-truth metadata.
 
 Ground truth (FaultSpec) is for the benchmark/scoring side ONLY — it must never
 leak into the Incident the agent sees. Each fault injects and reverses cleanly
@@ -211,6 +211,134 @@ class ExpiredCredential(Fault):
         return any(_component_down(s, "db") for s in snapshots)
 
 
+def _backlog_stuck(snapshots: Sequence[ProbeSnapshot]) -> bool:
+    with_metrics = [
+        s for s in snapshots if s.metrics and s.metrics.get("queue_depth") is not None
+    ]
+    if len(with_metrics) < 2:
+        return False
+    first, last = with_metrics[0], with_metrics[-1]
+    return (last.metrics["queue_depth"] > 0
+            and last.metrics["jobs_processed"] == first.metrics["jobs_processed"])
+
+
+class ConfigRolloutWorkerWedge(Fault):
+    """MULTI-STEP fault: a single action is genuinely incomplete. Rolling the
+    config back unblocks producers but the wedged consumer never drains the
+    backlog; restarting the worker alone leaves every request failing on the
+    bad config. Ground truth requires BOTH."""
+
+    spec = FaultSpec(
+        id="config_rollout_worker_wedge",
+        name="Bad config rollout with wedged queue consumer",
+        trigger="seed a job backlog, pause the worker (modeling a reload hook that "
+        "wedged it), then roll out feature_mode='turbo_v2' and restart app",
+        expected_symptoms=[
+            "/work returns 500 with 'invalid feature_mode'",
+            "queue_depth sits above zero without draining; jobs_processed flat",
+            "healthz stays ok (dependencies are fine)",
+        ],
+        canonical_root_cause="A configuration rollout set feature_mode to an "
+        "unsupported value AND wedged the queue consumer; requests fail and the "
+        "pre-rollout backlog never drains",
+        canonical_remediation="Roll back the app config AND restart the worker "
+        "service — either action alone leaves the incident unresolved",
+        severity=Severity.high,
+    )
+    log_signature = "invalid_feature_mode"
+
+    def inject(self, ctrl: SandboxController) -> None:
+        ctrl.pause("worker")  # first, so the seeded backlog is not consumed
+        for i in range(12):
+            ctrl.exec("queue", "redis-cli", "lpush", "jobs", f'{{"item": {i}}}')
+        config = ctrl.default_app_config()
+        config["feature_mode"] = "turbo_v2"
+        ctrl.write_app_config(config)
+        ctrl.restart("app")
+
+    def revert(self, ctrl: SandboxController) -> None:
+        ctrl.write_app_config(ctrl.default_app_config())
+        ctrl.restart("app")
+        ctrl.unpause("worker")
+
+    def symptoms_present(self, snapshots: Sequence[ProbeSnapshot]) -> bool:
+        config_broken = any(
+            s.work_status == 500 and "feature_mode" in str(s.work_body)
+            for s in snapshots
+        )
+        return config_broken and _backlog_stuck(snapshots)
+
+
+class DbOutageAmbiguous(DbConnectionExhaustion):
+    """TOOL-DISAMBIGUATION fault: the injection IS pool exhaustion (inherited),
+    but the scenario models degraded alert-time observability — the captured
+    bundle carries only generic connection errors, which a credential failure
+    would produce identically. The decisive 'remaining connection slots' FATAL
+    lines live in the db service's CURRENT logs, reachable only by actively
+    querying telemetry. NOTE: the synthetic capture guarantees this ambiguity
+    for the mock benchmark; in a real run it additionally depends on how much
+    driver detail the app surfaced into the capture window."""
+
+    spec = FaultSpec(
+        id="db_outage_ambiguous",
+        name="DB outage with ambiguous capture",
+        trigger="same as db_pool_exhaustion (8 idle pg_sleep sessions); the "
+        "scenario's capture carries only generic 'db connection failure' errors",
+        expected_symptoms=[
+            "healthz reports db component down (503)",
+            "/work returns 500 with a generic db connection error",
+            "decisive FATAL detail visible only via live log queries",
+        ],
+        canonical_root_cause="Database connection slots exhausted by long-running "
+        "idle sessions holding all non-reserved connections",
+        canonical_remediation="Terminate the idle long-running sessions "
+        "(restart/clean the db) to free connection slots",
+        severity=Severity.high,
+    )
+    log_signature = "remaining connection slots"
+
+
+class WorkerScaledToZero(Fault):
+    """GATE-EXERCISING fault: the only fixing action (scale_service) is
+    destructive by the server-side classification, so the correct path MUST
+    pass the HITL gate — auto-resolution is impossible by design. The tempting
+    reflex, restarting the worker, is a no-op at zero replicas."""
+
+    spec = FaultSpec(
+        id="worker_scaled_to_zero",
+        name="Queue consumers scaled to zero",
+        trigger="scale the worker service to 0 replicas (fat-fingered capacity "
+        "change); the worker logs a SIGTERM shutdown and goes away",
+        expected_symptoms=[
+            "worker logs worker_shutdown (SIGTERM) then goes silent",
+            "queue_depth grows monotonically; jobs_processed flat",
+            "/work and healthz stay green",
+        ],
+        canonical_root_cause="The worker (queue consumer) was scaled to zero "
+        "replicas; with no consumers running the backlog grows unbounded",
+        canonical_remediation="Scale the worker back to one replica; a restart "
+        "is a no-op when zero replicas exist",
+        severity=Severity.medium,
+    )
+    log_signature = None  # the shutdown line precedes the incident window
+
+    def inject(self, ctrl: SandboxController) -> None:
+        ctrl.scale("worker", 0)
+
+    def revert(self, ctrl: SandboxController) -> None:
+        ctrl.scale("worker", 1)
+
+    def symptoms_present(self, snapshots: Sequence[ProbeSnapshot]) -> bool:
+        with_metrics = [
+            s for s in snapshots if s.metrics and s.metrics.get("queue_depth") is not None
+        ]
+        if len(with_metrics) < 2:
+            return False
+        first, last = with_metrics[0], with_metrics[-1]
+        depth_grew = last.metrics["queue_depth"] > first.metrics["queue_depth"]
+        return depth_grew and last.metrics["jobs_processed"] == first.metrics["jobs_processed"]
+
+
 FAULTS: dict[str, Fault] = {
     f.spec.id: f
     for f in [
@@ -219,6 +347,9 @@ FAULTS: dict[str, Fault] = {
         DownstreamDependencyTimeout(),
         QueueConsumerStall(),
         ExpiredCredential(),
+        ConfigRolloutWorkerWedge(),
+        DbOutageAmbiguous(),
+        WorkerScaledToZero(),
     ]
 }
 

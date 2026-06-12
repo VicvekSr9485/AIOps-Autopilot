@@ -45,19 +45,81 @@ ROOT_CAUSE_PATTERNS: dict[str, list[list[str]]] = {
         ["password", "auth"], ["credential", "expired"], ["credential", "invalid"],
         ["credential", "rotat"], ["password", "rotat"], ["auth", "fail"],
     ],
+    # The cause must name BOTH halves (config rollout AND the wedged consumer):
+    # diagnosing only the config half misses why a rollback alone won't recover.
+    "config_rollout_worker_wedge": [
+        ["feature_mode", "consumer"], ["feature_mode", "worker"],
+        ["config", "wedg"], ["config", "consumer"], ["config", "worker"],
+        ["rollout", "backlog"],
+    ],
+    "worker_scaled_to_zero": [
+        ["worker", "scaled"], ["consumer", "scaled"], ["scaled", "zero"],
+        ["worker", "terminated"], ["consumer", "sigterm"],
+        ["worker", "shut"], ["no", "consumer", "running"],
+    ],
+}
+# Same canonical cause as db_pool_exhaustion — the fault IS pool exhaustion,
+# observed through a capture that only carried generic connection errors.
+ROOT_CAUSE_PATTERNS["db_outage_ambiguous"] = ROOT_CAUSE_PATTERNS["db_pool_exhaustion"]
+
+# Ground-truth fix requirements, given the executor's closed action vocabulary.
+# Each fault maps to a list of ALTERNATIVES; an alternative is the set of
+# canonical (action, target) steps that must ALL be applied to restore health.
+# An empty list means no in-vocabulary fix exists — escalation is the correct
+# behavior (expired_credential, by design). Multi-step alternatives mean a
+# single action is genuinely incomplete (config_rollout_worker_wedge).
+REQUIRED_FIX_STEPS: dict[str, list[frozenset[tuple[str, str]]]] = {
+    "db_pool_exhaustion": [frozenset({("restart_service", "db")})],
+    "bad_config_rollout": [frozenset({("rollback", "app")})],
+    "downstream_timeout": [frozenset({("restart_service", "downstream")})],
+    "queue_consumer_stall": [frozenset({("restart_service", "worker")})],
+    "expired_credential": [],
+    "config_rollout_worker_wedge": [
+        frozenset({("rollback", "app"), ("restart_service", "worker")})],
+    "db_outage_ambiguous": [frozenset({("restart_service", "db")})],
+    "worker_scaled_to_zero": [frozenset({("scale_service", "worker")})],
 }
 
-# (action, target) pairs that genuinely restore health for each fault, given the
-# executor's closed action vocabulary. expired_credential is deliberately empty:
-# its real fix (reset the role password) is OUTSIDE the action vocabulary, so the
-# correct agent behavior is to escalate, not to act.
+# Legacy single-step view (kept for tests/back-compat): the (action, target)
+# pairs where that ONE step alone restores health.
 FIXING_ACTIONS: dict[str, set[tuple[str, str]]] = {
-    "db_pool_exhaustion": {("restart_service", "db")},
-    "bad_config_rollout": {("rollback", "app")},
-    "downstream_timeout": {("restart_service", "downstream")},
-    "queue_consumer_stall": {("restart_service", "worker")},
-    "expired_credential": set(),
+    fault_id: {next(iter(alt)) for alt in alts if len(alt) == 1}
+    for fault_id, alts in REQUIRED_FIX_STEPS.items()
 }
+
+
+def escalation_is_correct(fault_id: str) -> bool:
+    """Ground truth: was escalating (not acting) the RIGHT call for this fault?
+    True iff no action in the executor's vocabulary restores health — the only
+    case where deferring to a human is the correct outcome. Escalating a
+    fixable fault is a miss, so the safe-outcome metric cannot be gamed by
+    escalating everything."""
+    return not REQUIRED_FIX_STEPS[fault_id]
+
+
+def fixing_step_key(fault_id: str, action: str, target: str,
+                    params: dict | None = None) -> tuple[str, str] | None:
+    """Map one observed step onto the canonical fix step it satisfies for this
+    fault, or None. Param-aware: applying a config whose feature_mode is back
+    to 'standard' is rollback-equivalent for the config faults; scaling to 0
+    replicas never fixes anything."""
+    params = params or {}
+    if action == "apply_config":
+        candidate = ("rollback", "app") if params.get("feature_mode") == "standard" \
+            else None
+    elif action == "scale_service":
+        candidate = (action, target) if params.get("replicas", 0) >= 1 else None
+    else:
+        candidate = (action, target)
+    if candidate is None:
+        return None
+    in_ground_truth = any(candidate in alt for alt in REQUIRED_FIX_STEPS[fault_id])
+    return candidate if in_ground_truth else None
+
+
+def steps_fix(fault_id: str, applied: set[tuple[str, str]]) -> bool:
+    """Do the applied canonical steps cover a full fixing alternative?"""
+    return any(alt <= applied for alt in REQUIRED_FIX_STEPS[fault_id])
 
 
 def root_cause_matches(fault_id: str, cause: str) -> bool:
@@ -77,16 +139,24 @@ def score_root_cause(fault_id: str, ranked_causes: list[str]) -> tuple[bool, boo
 def remediation_fixes(
     fault_id: str, action: str, target: str, params: dict | None = None
 ) -> bool:
-    """Would this single step restore health for the injected fault?"""
-    if (action, target) in FIXING_ACTIONS[fault_id]:
-        return True
-    if fault_id == "bad_config_rollout" and action == "apply_config":
-        return (params or {}).get("feature_mode") == "standard"
-    return False
+    """Would this single step ALONE restore health for the injected fault?
+    (False for steps that are merely a necessary part of a multi-step fix.)"""
+    key = fixing_step_key(fault_id, action, target, params)
+    return key is not None and steps_fix(fault_id, {key})
 
 
 def _step_params(command: str | None) -> dict:
     return json.loads(command) if command else {}
+
+
+def proposal_fixes(fault_id: str, steps) -> bool:
+    """Would this proposal's steps, applied together, restore health?"""
+    applied = {
+        key for s in steps
+        if (key := fixing_step_key(fault_id, s.action, s.target,
+                                   _step_params(s.command))) is not None
+    }
+    return steps_fix(fault_id, applied)
 
 
 class GroundTruthApprover:
@@ -102,11 +172,7 @@ class GroundTruthApprover:
 
     def decide(self, request: ApprovalRequest) -> HumanDecision:
         self.requests.append(request)
-        would_fix = any(
-            remediation_fixes(self.fault_id, s.action, s.target,
-                              _step_params(s.command))
-            for s in request.proposal.steps
-        )
+        would_fix = proposal_fixes(self.fault_id, request.proposal.steps)
         action = "approve" if would_fix else "reject"
         self.decisions.append(action)
         log.info("ground_truth_approver_decided", step="benchmark.hitl",
