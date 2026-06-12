@@ -97,6 +97,7 @@ class TriageResult(BaseModel):
 
     incident_id: str
     hypotheses: list[RootCauseHypothesis] = Field(min_length=1)
+    consulted_runbooks: list[str] = Field(default_factory=list)  # handed to the planner
     generated_at: datetime = Field(default_factory=utcnow)
 
     @property

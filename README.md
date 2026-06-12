@@ -25,7 +25,7 @@ make sandbox-up             # start the sandboxed target stack
 |---|---|
 | `src/autopilot/llm/` | Typed Qwen client: role-based model tiering, cost metering, mock mode |
 | `src/autopilot/ingestion/` | Normalizes raw sandbox captures into typed Incidents |
-| `src/autopilot/pipeline/` | Agent stages: ingestion + triage/root-cause done; remediation → verify (TODO) |
+| `src/autopilot/pipeline/` | Full agent loop: ingest → triage → plan → HITL gate → execute → verify → record |
 | `src/autopilot/mcp_servers/` | MCP tool servers: telemetry, infra/ops, knowledge — see [docs/mcp.md](docs/mcp.md) |
 | `src/autopilot/sandbox/` | Deterministic controller for the sandbox compose stack |
 | `src/autopilot/harness/` | Fault-injection harness (5 faults) with ground truth |

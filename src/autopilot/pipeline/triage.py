@@ -18,11 +18,12 @@ from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 
 import structlog
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field
 
 from autopilot.llm.client import QwenClient
 from autopilot.mcp_servers.exposure import filter_servers
 from autopilot.models import EvidenceRef, Incident, RootCauseHypothesis, TriageResult
+from autopilot.pipeline.structured import StructuredOutputError, complete_structured
 from autopilot.pipeline.summarize import summarize_telemetry
 from autopilot.tracing import span
 
@@ -87,15 +88,8 @@ async def _tool_json(server: FastMCP, tool: str, args: dict[str, Any]) -> dict:
     return json.loads(content[0].text)
 
 
-def _extract_json(text: str) -> str:
-    """Tolerate markdown fences / surrounding prose around the JSON object."""
-    start, end = text.find("{"), text.rfind("}")
-    if start == -1 or end <= start:
-        raise ValueError("no JSON object found in model output")
-    return text[start : end + 1]
-
-
-def _to_result(incident_id: str, parsed: _LLMTriage) -> TriageResult:
+def _to_result(incident_id: str, parsed: _LLMTriage,
+               consulted_runbooks: list[str]) -> TriageResult:
     hypotheses = []
     for h in parsed.hypotheses:
         evidence = [
@@ -113,12 +107,16 @@ def _to_result(incident_id: str, parsed: _LLMTriage) -> TriageResult:
             )
         )
     hypotheses.sort(key=lambda h: h.confidence, reverse=True)  # don't trust LLM order
-    return TriageResult(incident_id=incident_id, hypotheses=hypotheses)
+    return TriageResult(incident_id=incident_id, hypotheses=hypotheses,
+                        consulted_runbooks=consulted_runbooks)
 
 
-async def _gather_context(incident: Incident, scoped: dict[str, FastMCP]) -> str:
+async def _gather_context(
+    incident: Incident, scoped: dict[str, FastMCP]
+) -> tuple[str, list[str]]:
     """Enrich via the stage's scoped tools (knowledge + telemetry) — deterministic,
-    zero LLM tokens."""
+    zero LLM tokens. Returns (prompt context, runbook excerpts) — the excerpts are
+    carried on the TriageResult so the toolless planner can reuse them."""
     summary = summarize_telemetry(incident.telemetry)
     top_symptoms = " ".join(
         [incident.telemetry.alert.name, incident.telemetry.alert.description]
@@ -126,16 +124,18 @@ async def _gather_context(incident: Incident, scoped: dict[str, FastMCP]) -> str
     )[:500]
 
     sections = [f"INCIDENT {incident.id}\n{summary}"]
+    runbook_notes: list[str] = []
 
     if "knowledge" in scoped:
         runbooks = await _tool_json(
             scoped["knowledge"], "search_runbooks", {"query": top_symptoms, "k": 3}
         )
+        runbook_notes = [
+            f"{r['title']} (score={r['score']}): {r['excerpt'][:400]}"
+            for r in runbooks["results"]
+        ]
         sections.append(
-            "RELEVANT RUNBOOKS:\n" + "\n".join(
-                f"- {r['title']} (score={r['score']}): {r['excerpt'][:400]}"
-                for r in runbooks["results"]
-            )
+            "RELEVANT RUNBOOKS:\n" + "\n".join(f"- {note}" for note in runbook_notes)
         )
         past = await _tool_json(
             scoped["knowledge"], "search_past_incidents", {"query": top_symptoms, "k": 2}
@@ -158,7 +158,7 @@ async def _gather_context(incident: Incident, scoped: dict[str, FastMCP]) -> str
             f"{[a['name'] for a in alerts_now['alerts']] or 'none'}"
         )
 
-    return "\n\n".join(sections)
+    return "\n\n".join(sections), runbook_notes
 
 
 async def run_triage(
@@ -172,50 +172,23 @@ async def run_triage(
     scoped = filter_servers("triage", servers)  # telemetry + knowledge; never infra
 
     with span("triage", incident_id=incident.id):
-        context = await _gather_context(incident, scoped)
+        context, runbook_notes = await _gather_context(incident, scoped)
         messages = [
             {"role": "system", "content": _SYSTEM_PROMPT},
             {"role": "user", "content": context},
         ]
+        try:
+            parsed, tokens_spent = complete_structured(
+                client, "reasoning", messages, _LLMTriage,
+                step=STEP, max_attempts=max_attempts, token_cap=token_cap,
+            )
+        except StructuredOutputError as e:
+            raise TriageError(str(e)) from None
 
-        tokens_spent = 0
-        last_error = ""
-        for attempt in range(1, max_attempts + 1):
-            resp = client.complete("reasoning", messages, step=STEP)
-            tokens_spent += resp.input_tokens + resp.output_tokens
-            try:
-                parsed = _LLMTriage.model_validate_json(_extract_json(resp.text))
-                result = _to_result(incident.id, parsed)
-                log.info(
-                    "triage_hypotheses_ranked", step=STEP, incident_id=incident.id,
-                    attempt=attempt, hypotheses=len(result.hypotheses),
-                    top_confidence=result.top.confidence, tokens_spent=tokens_spent,
-                )
-                return result
-            except (ValueError, ValidationError) as e:
-                last_error = str(e)[:300]
-                log.warning(
-                    "triage_parse_retry", step=STEP, incident_id=incident.id,
-                    attempt=attempt, error=last_error,
-                )
-                if tokens_spent >= token_cap:
-                    raise TriageError(
-                        f"token cap exceeded ({tokens_spent} >= {token_cap}) after "
-                        f"{attempt} attempt(s); last parse error: {last_error}"
-                    ) from None
-                messages = messages + [
-                    {"role": "assistant", "content": resp.text[:1000]},
-                    {
-                        "role": "user",
-                        "content": (
-                            f"Your previous response failed validation: {last_error}. "
-                            "Respond again with ONLY the strict JSON object — no "
-                            "prose, no markdown."
-                        ),
-                    },
-                ]
-
-        raise TriageError(
-            f"no valid hypothesis list after {max_attempts} attempts "
-            f"({tokens_spent} tokens spent); last parse error: {last_error}"
+        result = _to_result(incident.id, parsed, runbook_notes)
+        log.info(
+            "triage_hypotheses_ranked", step=STEP, incident_id=incident.id,
+            hypotheses=len(result.hypotheses),
+            top_confidence=result.top.confidence, tokens_spent=tokens_spent,
         )
+        return result
