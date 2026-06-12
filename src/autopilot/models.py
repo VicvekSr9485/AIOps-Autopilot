@@ -91,6 +91,19 @@ class RootCauseHypothesis(BaseModel):
     reasoning_summary: str = ""
 
 
+class TriageResult(BaseModel):
+    """Output of the triage/root-cause stage: hypotheses ranked by confidence
+    (descending — enforced by the stage, not trusted from the model)."""
+
+    incident_id: str
+    hypotheses: list[RootCauseHypothesis] = Field(min_length=1)
+    generated_at: datetime = Field(default_factory=utcnow)
+
+    @property
+    def top(self) -> RootCauseHypothesis:
+        return self.hypotheses[0]
+
+
 # ------------------------------------------------------------------------- remediation
 
 
