@@ -1,0 +1,241 @@
+{
+  "report": {
+    "incident_id": "inc-052b9dd7231c",
+    "resolved": true,
+    "triage": {
+      "incident_id": "inc-052b9dd7231c",
+      "hypotheses": [
+        {
+          "incident_id": "inc-052b9dd7231c",
+          "cause": "Config rollout breaks requests AND wedges queue consumers",
+          "confidence": 0.95,
+          "evidence": [
+            {
+              "kind": "log",
+              "pointer": "log:app",
+              "excerpt": "work_failed {\"reason\": \"invalid_feature_mode\", \"feature_mode\": \"turbo_v2\"}"
+            },
+            {
+              "kind": "metric",
+              "pointer": "metric:queue_depth",
+              "excerpt": "first=11 last=11 delta=+0"
+            },
+            {
+              "kind": "metric",
+              "pointer": "metric:jobs_processed",
+              "excerpt": "first=1 last=1 delta=+0"
+            },
+            {
+              "kind": "log",
+              "pointer": "log:app",
+              "excerpt": "GET /work HTTP/1.1 500 Internal Server Error"
+            }
+          ],
+          "reasoning_summary": "The logs explicitly show work_failed errors due to an invalid_feature_mode (turbo_v2), which aligns with a bad configuration rollout. Concurrently, the queue_depth remains stuck at 11 and jobs_processed is not advancing, indicating the queue consumers are wedged by the invalid configuration and failing to process backlog, while user-facing /work requests are returning 500 errors."
+        },
+        {
+          "incident_id": "inc-052b9dd7231c",
+          "cause": "Invalid feature flag configuration causing 500 errors on /work endpoint",
+          "confidence": 0.75,
+          "evidence": [
+            {
+              "kind": "log",
+              "pointer": "log:app",
+              "excerpt": "work_failed {\"reason\": \"invalid_feature_mode\", \"feature_mode\": \"turbo_v2\"}"
+            },
+            {
+              "kind": "log",
+              "pointer": "log:app",
+              "excerpt": "GET /work HTTP/1.1 500 Internal Server Error"
+            },
+            {
+              "kind": "metric",
+              "pointer": "metric:errors_total",
+              "excerpt": "first=1 last=5 delta=+4"
+            }
+          ],
+          "reasoning_summary": "The application is rejecting requests to the /work endpoint with 500 Internal Server Error due to an unrecognized feature_mode 'turbo_v2'. This indicates a misconfiguration or unsupported feature flag being passed to the application, causing all work requests to fail, though this hypothesis does not fully account for the wedged queue consumers."
+        }
+      ],
+      "consulted_runbooks": [
+        "Queue backlog growing while consumers sit idle (score=0.1066): Symptoms: queue_depth grows monotonically; jobs_processed counter stops advancing; user-facing requests and health checks stay green \u2014 a silent backlog with no error logs.\nDiagnosis: compare producer and consumer rates over a window; check the worker/consumer process state (paused, crashed, deadlocked); verify the queue itself accepts reads.\nRemediation: restart (or unpause) the worker service so ",
+        "Queue consumer scaled to zero replicas (score=0.0907): Symptoms: worker_shutdown (SIGTERM) in the logs and then silence; queue_depth climbing while jobs_processed stays flat; health checks green because nothing user-facing is failing yet.\nRemediation: scale the consumer back to its baseline replica count. IMPORTANT: restarting the service is a NO-OP when zero replicas exist \u2014 there is no container to restart; an explicit scale-up is required. Treat th",
+        "Config rollout breaks requests AND wedges queue consumers (score=0.0767): Symptoms: work_failed errors naming an invalid setting (e.g. invalid_feature_mode) right after a rollout, while queue_depth sits above zero without draining and jobs_processed stops advancing.\nRemediation: roll the configuration back AND restart the consumer as well \u2014 a consumer that loaded the bad config stays wedged after the rollback, so the backlog will not drain on its own. Verify both the er"
+      ],
+      "telemetry_summary": "ALERT: sandbox.app.health_degraded (severity=medium, source=sandbox-probe)\n  1/6 health checks failing, 6/6 work requests failing\nMETRICS (25 points, windowed):\n  errors_total: first=1 last=5 delta=+4 samples=5\n  jobs_processed: first=1 last=1 delta=+0 samples=5\n  queue_depth: first=11 last=11 delta=+0 samples=5\n  requests_total: first=1 last=5 delta=+4 samples=5\n  work_success_total: first=0 last=0 delta=+0 samples=5\nLOGS (40 lines -> 36 distinct, top 12 shown):\n  [app] x5: work_failed {\"reason\": \"invalid_feature_mode\", \"feature_mode\": \"turbo_v2\"}\n  [app] x1: INFO:     127.0.0.1:41938 - \"GET /healthz HTTP/1.1\" 200 OK\n  [app] x1: INFO:     127.0.0.1:51408 - \"GET /healthz HTTP/1.1\" 200 OK\n  [app] x1: INFO:     192.168.65.1:20748 - \"GET /healthz HTTP/1.1\" 200 OK\n  [app] x1: INFO:     192.168.65.1:20748 - \"GET /metrics HTTP/1.1\" 200 OK\n  [app] x1: INFO:     192.168.65.1:20748 - \"GET /work HTTP/1.1\" 500 Internal Server Error\n  [app] x1: INFO:     192.168.65.1:43049 - \"GET /healthz HTTP/1.1\" 200 OK\n  [app] x1: INFO:     192.168.65.1:43049 - \"GET /metrics HTTP/1.1\" 200 OK\n  [app] x1: INFO:     192.168.65.1:43049 - \"GET /work HTTP/1.1\" 500 Internal Server Error\n  [app] x1: INFO:     192.168.65.1:48608 - \"GET /healthz HTTP/1.1\" 200 OK\n  [app] x1: INFO:     192.168.65.1:48608 - \"GET /metrics HTTP/1.1\" 200 OK\n  [app] x1: INFO:     192.168.65.1:48608 - \"GET /work HTTP/1.1\" 500 Internal Server Error\n  ... 24 more distinct messages omitted",
+      "generated_at": "2026-06-12T19:36:23.654254Z"
+    },
+    "proposal": {
+      "id": "rem-3178f7c82b1e",
+      "incident_id": "inc-052b9dd7231c",
+      "hypothesis_cause": "Config rollout breaks requests AND wedges queue consumers",
+      "steps": [
+        {
+          "order": 1,
+          "action": "rollback",
+          "target": "app",
+          "command": null,
+          "expected_effect": "Restores canonical app config, removing the invalid feature_mode causing request failures."
+        },
+        {
+          "order": 2,
+          "action": "restart_service",
+          "target": "worker",
+          "command": null,
+          "expected_effect": "Restarts the wedged worker consumer so it loads the rolled-back config and resumes draining the queue backlog."
+        }
+      ],
+      "rollback_plan": [
+        {
+          "order": 1,
+          "action": "apply_config",
+          "target": "app",
+          "command": "{\"feature_mode\": \"turbo_v2\"}",
+          "expected_effect": "Re-applies the invalid configuration to restore the pre-remediation app state."
+        },
+        {
+          "order": 2,
+          "action": "restart_service",
+          "target": "worker",
+          "command": null,
+          "expected_effect": "Restarts the worker to load the re-applied invalid configuration, restoring the pre-remediation wedged state."
+        }
+      ],
+      "risk_score": 0.2,
+      "blast_radius": "multiple_services",
+      "requires_approval": true
+    },
+    "gate": {
+      "approved": true,
+      "route": "auto",
+      "proposal": {
+        "id": "rem-3178f7c82b1e",
+        "incident_id": "inc-052b9dd7231c",
+        "hypothesis_cause": "Config rollout breaks requests AND wedges queue consumers",
+        "steps": [
+          {
+            "order": 1,
+            "action": "rollback",
+            "target": "app",
+            "command": null,
+            "expected_effect": "Restores canonical app config, removing the invalid feature_mode causing request failures."
+          },
+          {
+            "order": 2,
+            "action": "restart_service",
+            "target": "worker",
+            "command": null,
+            "expected_effect": "Restarts the wedged worker consumer so it loads the rolled-back config and resumes draining the queue backlog."
+          }
+        ],
+        "rollback_plan": [
+          {
+            "order": 1,
+            "action": "apply_config",
+            "target": "app",
+            "command": "{\"feature_mode\": \"turbo_v2\"}",
+            "expected_effect": "Re-applies the invalid configuration to restore the pre-remediation app state."
+          },
+          {
+            "order": 2,
+            "action": "restart_service",
+            "target": "worker",
+            "command": null,
+            "expected_effect": "Restarts the worker to load the re-applied invalid configuration, restoring the pre-remediation wedged state."
+          }
+        ],
+        "risk_score": 0.2,
+        "blast_radius": "multiple_services",
+        "requires_approval": false
+      },
+      "escalation_reasons": [],
+      "human_action": null,
+      "note": ""
+    },
+    "execution": {
+      "proposal_id": "rem-3178f7c82b1e",
+      "incident_id": "inc-052b9dd7231c",
+      "success": true,
+      "step_outcomes": [
+        {
+          "step_order": 1,
+          "success": true,
+          "output": "did restore canonical config (reverting feature_mode) and restart app"
+        },
+        {
+          "step_order": 2,
+          "success": true,
+          "output": "restarted sandbox service 'worker'"
+        }
+      ],
+      "started_at": "2026-06-12T19:36:52.957181Z",
+      "finished_at": "2026-06-12T19:36:53.819718Z",
+      "error": null
+    },
+    "verification": {
+      "incident_id": "inc-052b9dd7231c",
+      "resolved": true,
+      "checks": [
+        {
+          "name": "all_probes_healthy",
+          "passed": true,
+          "detail": "0/3 probes failing"
+        },
+        {
+          "name": "no_active_alerts",
+          "passed": true,
+          "detail": "none firing"
+        },
+        {
+          "name": "backlog_draining",
+          "passed": true,
+          "detail": "queue_depth 0->0, jobs_processed delta +2"
+        }
+      ],
+      "verified_at": "2026-06-12T19:36:54.375450Z"
+    },
+    "rolled_back": false,
+    "outcome_recorded": true,
+    "llm": {
+      "calls": 2,
+      "input_tokens": 2964,
+      "output_tokens": 4082,
+      "est_cost_usd": 0.013743,
+      "steps": [
+        "triage.root_cause",
+        "remediation.plan"
+      ]
+    },
+    "stage_seconds": {
+      "triage": 49.0549,
+      "remediation": 29.3018,
+      "execution": 0.8627,
+      "verification": 0.5559
+    }
+  },
+  "llm_records": [
+    {
+      "model": "qwen3.7-max",
+      "role": "reasoning",
+      "step": "triage.root_cause",
+      "input_tokens": 1468,
+      "output_tokens": 2512,
+      "est_cost_usd": 0.011255,
+      "tier": "free",
+      "free_tokens_used": 3980,
+      "voucher_tokens_used": 0
+    },
+    {
+      "model": "qwen3.7-plus",
+      "role": "default",
+      "step": "remediation.plan",
+      "input_tokens": 1496,
+      "output_tokens": 1570,
+      "est_cost_usd": 0.002488,
+      "tier": "free",
+      "free_tokens_used": 3066,
+      "voucher_tokens_used": 0
+    }
+  ],
+  "oracle_decisions": []
+}

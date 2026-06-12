@@ -42,6 +42,12 @@ def _fixture_key(model: str, messages: list[dict[str, str]]) -> str:
     return hashlib.sha256(payload.encode()).hexdigest()[:16]
 
 
+class RunTokenCapExceeded(RuntimeError):
+    """The session-wide token cap (AUTOPILOT_RUN_TOKEN_CAP) was reached; the
+    call was refused BEFORE touching the model — a runaway loop cannot drain
+    the free tier or the voucher past the cap by more than one call."""
+
+
 class QwenClient:
     """One instance per session/run; shares a CostMeter across the whole pipeline."""
 
@@ -70,6 +76,14 @@ class QwenClient:
     ) -> LLMResponse:
         """Run a chat completion for a pipeline step. `step` labels telemetry."""
         model = self.config.model_by_role[role]
+        cap = self.config.run_token_cap
+        if cap is not None:
+            spent = sum(r.input_tokens + r.output_tokens for r in self.meter.records)
+            if spent >= cap:
+                raise RunTokenCapExceeded(
+                    f"run token cap {cap} reached (spent~{spent}); refusing the "
+                    f"call for step {step!r}"
+                )
         if self.config.mock_mode:
             text, input_tokens, output_tokens = self._mock_complete(model, messages)
         else:

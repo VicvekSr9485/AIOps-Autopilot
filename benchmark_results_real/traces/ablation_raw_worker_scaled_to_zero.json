@@ -1,0 +1,198 @@
+{
+  "report": {
+    "incident_id": "inc-9c831f7a998b",
+    "resolved": false,
+    "triage": {
+      "incident_id": "inc-9c831f7a998b",
+      "hypotheses": [
+        {
+          "incident_id": "inc-9c831f7a998b",
+          "cause": "Queue backlog growing while consumers sit idle (deadlocked or paused worker)",
+          "confidence": 0.95,
+          "evidence": [
+            {
+              "kind": "metric",
+              "pointer": "queue_depth",
+              "excerpt": "queue_depth increases monotonically from 1 to 9 over the observation window"
+            },
+            {
+              "kind": "metric",
+              "pointer": "jobs_processed",
+              "excerpt": "jobs_processed remains flat at 1 across all metric samples"
+            },
+            {
+              "kind": "log",
+              "pointer": "log:app",
+              "excerpt": "GET /healthz and GET /work returning 200 OK, indicating the web server is healthy but background processing is stalled"
+            }
+          ],
+          "reasoning_summary": "The telemetry perfectly matches the 'Queue backlog growing while consumers sit idle' runbook. The queue_depth metric grows steadily while the jobs_processed counter is completely stalled at 1. Meanwhile, user-facing health checks and work requests remain green (200 OK) with zero errors, indicating the API is up but the background consumer is paused, deadlocked, or otherwise failing to pull from the queue."
+        },
+        {
+          "incident_id": "inc-9c831f7a998b",
+          "cause": "Queue consumer scaled to zero replicas",
+          "confidence": 0.35,
+          "evidence": [
+            {
+              "kind": "metric",
+              "pointer": "queue_depth",
+              "excerpt": "queue_depth increases from 1 to 9"
+            },
+            {
+              "kind": "metric",
+              "pointer": "jobs_processed",
+              "excerpt": "jobs_processed remains flat at 1"
+            }
+          ],
+          "reasoning_summary": "A scaled-to-zero consumer would also produce a growing queue depth and a flat jobs_processed metric. However, this is less likely because there are no worker_shutdown or SIGTERM logs in the provided telemetry to indicate a recent scale-down event."
+        }
+      ],
+      "consulted_runbooks": [
+        "Queue backlog growing while consumers sit idle (score=0.1112): Symptoms: queue_depth grows monotonically; jobs_processed counter stops advancing; user-facing requests and health checks stay green \u2014 a silent backlog with no error logs.\nDiagnosis: compare producer and consumer rates over a window; check the worker/consumer process state (paused, crashed, deadlocked); verify the queue itself accepts reads.\nRemediation: restart (or unpause) the worker service so ",
+        "Queue consumer scaled to zero replicas (score=0.0896): Symptoms: worker_shutdown (SIGTERM) in the logs and then silence; queue_depth climbing while jobs_processed stays flat; health checks green because nothing user-facing is failing yet.\nRemediation: scale the consumer back to its baseline replica count. IMPORTANT: restarting the service is a NO-OP when zero replicas exist \u2014 there is no container to restart; an explicit scale-up is required. Treat th",
+        "Postgres connection slots exhausted / too many clients (score=0.0573): Symptoms: health checks report the database component down; application requests fail with 'remaining connection slots are reserved' or 'sorry, too many clients already'; errors appear without a deploy or config change.\nDiagnosis: inspect pg_stat_activity for idle or long-running sessions (state, query_start, usename); compare session count against max_connections; look for batch jobs or leaked po"
+      ],
+      "telemetry_summary": "ALERT: sandbox.app.anomaly_suspected (severity=low, source=sandbox-probe)\n  0/6 health checks failing, 0/6 work requests failing\nMETRICS (30 points, windowed):\n  errors_total: first=0 last=0 delta=+0 samples=6\n  jobs_processed: first=1 last=1 delta=+0 samples=6\n  queue_depth: first=1 last=6 delta=+5 samples=6\n  requests_total: first=2 last=7 delta=+5 samples=6\n  work_success_total: first=2 last=7 delta=+5 samples=6\nLOGS (41 lines -> 41 distinct, top 12 shown):\n  [app] x1: INFO:     127.0.0.1:35764 - \"GET /healthz HTTP/1.1\" 200 OK\n  [app] x1: INFO:     127.0.0.1:54784 - \"GET /healthz HTTP/1.1\" 200 OK\n  [app] x1: INFO:     127.0.0.1:54788 - \"GET /healthz HTTP/1.1\" 200 OK\n  [app] x1: INFO:     192.168.65.1:17901 - \"GET /healthz HTTP/1.1\" 200 OK\n  [app] x1: INFO:     192.168.65.1:17901 - \"GET /metrics HTTP/1.1\" 200 OK\n  [app] x1: INFO:     192.168.65.1:17901 - \"GET /work HTTP/1.1\" 200 OK\n  [app] x1: INFO:     192.168.65.1:19089 - \"GET /healthz HTTP/1.1\" 200 OK\n  [app] x1: INFO:     192.168.65.1:19089 - \"GET /metrics HTTP/1.1\" 200 OK\n  [app] x1: INFO:     192.168.65.1:19089 - \"GET /work HTTP/1.1\" 200 OK\n  [app] x1: INFO:     192.168.65.1:21143 - \"GET /healthz HTTP/1.1\" 200 OK\n  [app] x1: INFO:     192.168.65.1:21143 - \"GET /metrics HTTP/1.1\" 200 OK\n  [app] x1: INFO:     192.168.65.1:21143 - \"GET /work HTTP/1.1\" 200 OK\n  ... 29 more distinct messages omitted",
+      "generated_at": "2026-06-12T19:50:08.657458Z"
+    },
+    "proposal": {
+      "id": "rem-d8b1fff53c3b",
+      "incident_id": "inc-9c831f7a998b",
+      "hypothesis_cause": "Queue backlog growing while consumers sit idle (deadlocked or paused worker)",
+      "steps": [
+        {
+          "order": 1,
+          "action": "restart_service",
+          "target": "worker",
+          "command": null,
+          "expected_effect": "Clears any deadlock or paused state in the worker process, allowing it to resume consuming messages from the queue and reducing the queue_depth."
+        }
+      ],
+      "rollback_plan": [
+        {
+          "order": 1,
+          "action": "restart_service",
+          "target": "worker",
+          "command": null,
+          "expected_effect": "Re-applies the restart to the worker service if the initial restart did not successfully clear the deadlock or if the service entered an unexpected state post-remediation."
+        }
+      ],
+      "risk_score": 0.1,
+      "blast_radius": "single_service",
+      "requires_approval": true
+    },
+    "gate": {
+      "approved": true,
+      "route": "auto",
+      "proposal": {
+        "id": "rem-d8b1fff53c3b",
+        "incident_id": "inc-9c831f7a998b",
+        "hypothesis_cause": "Queue backlog growing while consumers sit idle (deadlocked or paused worker)",
+        "steps": [
+          {
+            "order": 1,
+            "action": "restart_service",
+            "target": "worker",
+            "command": null,
+            "expected_effect": "Clears any deadlock or paused state in the worker process, allowing it to resume consuming messages from the queue and reducing the queue_depth."
+          }
+        ],
+        "rollback_plan": [
+          {
+            "order": 1,
+            "action": "restart_service",
+            "target": "worker",
+            "command": null,
+            "expected_effect": "Re-applies the restart to the worker service if the initial restart did not successfully clear the deadlock or if the service entered an unexpected state post-remediation."
+          }
+        ],
+        "risk_score": 0.1,
+        "blast_radius": "single_service",
+        "requires_approval": false
+      },
+      "escalation_reasons": [],
+      "human_action": null,
+      "note": ""
+    },
+    "execution": {
+      "proposal_id": "rem-d8b1fff53c3b",
+      "incident_id": "inc-9c831f7a998b",
+      "success": true,
+      "step_outcomes": [
+        {
+          "step_order": 1,
+          "success": true,
+          "output": "restarted sandbox service 'worker'"
+        }
+      ],
+      "started_at": "2026-06-12T19:50:42.188929Z",
+      "finished_at": "2026-06-12T19:50:42.297986Z",
+      "error": null
+    },
+    "verification": {
+      "incident_id": "inc-9c831f7a998b",
+      "resolved": false,
+      "checks": [
+        {
+          "name": "all_probes_healthy",
+          "passed": true,
+          "detail": "0/3 probes failing"
+        },
+        {
+          "name": "no_active_alerts",
+          "passed": true,
+          "detail": "none firing"
+        },
+        {
+          "name": "backlog_draining",
+          "passed": false,
+          "detail": "queue_depth 123->125, jobs_processed delta +0"
+        }
+      ],
+      "verified_at": "2026-06-12T19:51:29.882642Z"
+    },
+    "rolled_back": true,
+    "outcome_recorded": true,
+    "llm": {
+      "calls": 2,
+      "input_tokens": 7023,
+      "output_tokens": 4069,
+      "est_cost_usd": 0.018442,
+      "steps": [
+        "triage.root_cause",
+        "remediation.plan"
+      ]
+    },
+    "stage_seconds": {
+      "triage": 46.7277,
+      "remediation": 33.5302,
+      "execution": 0.1092,
+      "verification": 47.584
+    }
+  },
+  "llm_records": [
+    {
+      "model": "qwen3.7-max",
+      "role": "reasoning",
+      "step": "triage.root_cause",
+      "input_tokens": 5529,
+      "output_tokens": 2366,
+      "est_cost_usd": 0.015784,
+      "tier": "free",
+      "free_tokens_used": 7895,
+      "voucher_tokens_used": 0
+    },
+    {
+      "model": "qwen3.7-plus",
+      "role": "default",
+      "step": "remediation.plan",
+      "input_tokens": 1494,
+      "output_tokens": 1703,
+      "est_cost_usd": 0.002658,
+      "tier": "free",
+      "free_tokens_used": 3197,
+      "voucher_tokens_used": 0
+    }
+  ],
+  "oracle_decisions": []
+}

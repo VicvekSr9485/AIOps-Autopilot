@@ -118,6 +118,7 @@ def _count_invalid_tool_calls(execution) -> int:
 async def _run_pipeline_scenario(
     fault_id: str, world: World, client: QwenClient,
     context_mode: Literal["summarized", "raw"] = "summarized",
+    verify_settle_s: float = 0.0,
 ) -> tuple[ScenarioMetrics, dict]:
     approver = GroundTruthApprover(fault_id)
     meter_start = len(client.meter.records)
@@ -125,7 +126,8 @@ async def _run_pipeline_scenario(
     try:
         report = await run_incident(
             world.incident, world.servers, client, approver, world.context,
-            verify_interval_s=0.0, context_mode=context_mode,
+            verify_interval_s=0.0, verify_settle_s=verify_settle_s,
+            context_mode=context_mode,
         )
     except (TriageError, PlanningError) as e:
         records = _meter_slice(client, meter_start)
@@ -173,6 +175,7 @@ async def _run_pipeline_scenario(
 
 async def _run_baseline_scenario(
     fault_id: str, world: World, client: QwenClient,
+    verify_settle_s: float = 0.0,
 ) -> tuple[ScenarioMetrics, dict]:
     meter_start = len(client.meter.records)
     t0 = time.perf_counter()
@@ -185,7 +188,8 @@ async def _run_baseline_scenario(
         application = await apply_baseline(result, world.servers)
         if application.applied:
             verification = await verify(world.incident.id, world.servers,
-                                        interval_s=0.0)
+                                        interval_s=0.0,
+                                        settle_timeout_s=verify_settle_s)
             resolved = application.success and verification.resolved
 
     records = _meter_slice(client, meter_start)
@@ -230,6 +234,10 @@ async def run_benchmark(
     """Returns (report, traces) where traces maps '<approach>_<fault_id>' to the
     full per-scenario artifact (written to disk by report.write_artifacts)."""
     started_at = utcnow()
+    # Real stacks need a bounded convergence window before verification reads
+    # the steady state (identical for BOTH approaches — measurement fairness);
+    # the mock sandbox flips state instantly, so 0 keeps it exact and fast.
+    verify_settle_s = 45.0 if mode == "real" else 0.0
     guard = ModelGuard(client)
     scenarios: list[ScenarioMetrics] = []
     ablation_rows: list[AblationScenario] = []
@@ -242,10 +250,12 @@ async def run_benchmark(
                 try:
                     if approach == "pipeline":
                         metrics, trace = await _run_pipeline_scenario(
-                            fault_id, world, client)
+                            fault_id, world, client,
+                            verify_settle_s=verify_settle_s)
                     else:
                         metrics, trace = await _run_baseline_scenario(
-                            fault_id, world, client)
+                            fault_id, world, client,
+                            verify_settle_s=verify_settle_s)
                 finally:
                     world.cleanup()
                 scenarios.append(metrics)
@@ -260,7 +270,8 @@ async def run_benchmark(
                 world = world_factory(fault_id)
                 try:
                     raw_metrics, raw_trace = await _run_pipeline_scenario(
-                        fault_id, world, client, context_mode="raw")
+                        fault_id, world, client, context_mode="raw",
+                        verify_settle_s=verify_settle_s)
                 finally:
                     world.cleanup()
                 summarized = next(

@@ -1,0 +1,203 @@
+{
+  "report": {
+    "incident_id": "inc-d114ea98905d",
+    "resolved": true,
+    "triage": {
+      "incident_id": "inc-d114ea98905d",
+      "hypotheses": [
+        {
+          "incident_id": "inc-d114ea98905d",
+          "cause": "Queue consumer stalled, deadlocked, or silently crashed, causing a growing backlog while sitting idle",
+          "confidence": 0.95,
+          "evidence": [
+            {
+              "kind": "metric",
+              "pointer": "queue_depth",
+              "excerpt": "Increases monotonically from 0 to 8 across the observation window"
+            },
+            {
+              "kind": "metric",
+              "pointer": "jobs_processed",
+              "excerpt": "Remains completely flat at 1 across all samples"
+            },
+            {
+              "kind": "log",
+              "pointer": "log:worker",
+              "excerpt": "Only a single 'job_processed' event is logged at 19:27:10, with no subsequent worker activity or error logs"
+            },
+            {
+              "kind": "alert",
+              "pointer": "alert:sandbox.app.anomaly_suspected",
+              "excerpt": "0/6 health checks failing, 0/6 work requests failing, indicating user-facing paths remain green"
+            }
+          ],
+          "reasoning_summary": "The telemetry shows a classic silent backlog scenario: the application continues to accept requests and enqueue work (queue_depth grows to 8), but the worker process stops consuming jobs after the very first one (jobs_processed stuck at 1, single worker log entry). Health checks and user-facing requests remain successful (errors_total=0), perfectly matching the 'Queue backlog growing while consumers sit idle' runbook. The absence of SIGTERM or shutdown logs makes a consumer stall, deadlock, or silent crash much more likely than a deliberate scale-down."
+        },
+        {
+          "incident_id": "inc-d114ea98905d",
+          "cause": "Queue consumer scaled to zero replicas or terminated by orchestrator without graceful shutdown",
+          "confidence": 0.3,
+          "evidence": [
+            {
+              "kind": "metric",
+              "pointer": "jobs_processed",
+              "excerpt": "Stops advancing after 1"
+            },
+            {
+              "kind": "log",
+              "pointer": "log:worker",
+              "excerpt": "Complete silence from worker logs after the first job, which could indicate the container was abruptly terminated"
+            }
+          ],
+          "reasoning_summary": "Although a silent termination or scale-to-zero could explain the lack of worker logs and stalled job processing, the absence of SIGTERM/shutdown logs and the exact alignment with the 'consumers sit idle' runbook makes a stall or deadlock significantly more likely. If the container was killed, we would typically see orchestrator events or OOM logs."
+        }
+      ],
+      "consulted_runbooks": [
+        "Queue backlog growing while consumers sit idle (score=0.0955): Symptoms: queue_depth grows monotonically; jobs_processed counter stops advancing; user-facing requests and health checks stay green \u2014 a silent backlog with no error logs.\nDiagnosis: compare producer and consumer rates over a window; check the worker/consumer process state (paused, crashed, deadlocked); verify the queue itself accepts reads.\nRemediation: restart (or unpause) the worker service so ",
+        "Queue consumer scaled to zero replicas (score=0.0876): Symptoms: worker_shutdown (SIGTERM) in the logs and then silence; queue_depth climbing while jobs_processed stays flat; health checks green because nothing user-facing is failing yet.\nRemediation: scale the consumer back to its baseline replica count. IMPORTANT: restarting the service is a NO-OP when zero replicas exist \u2014 there is no container to restart; an explicit scale-up is required. Treat th",
+        "Postgres connection slots exhausted / too many clients (score=0.056): Symptoms: health checks report the database component down; application requests fail with 'remaining connection slots are reserved' or 'sorry, too many clients already'; errors appear without a deploy or config change.\nDiagnosis: inspect pg_stat_activity for idle or long-running sessions (state, query_start, usename); compare session count against max_connections; look for batch jobs or leaked po"
+      ],
+      "telemetry_summary": "ALERT: sandbox.app.anomaly_suspected (severity=low, source=sandbox-probe)\n  0/6 health checks failing, 0/6 work requests failing\nMETRICS (30 points, windowed):\n  errors_total: first=0 last=0 delta=+0 samples=6\n  jobs_processed: first=1 last=1 delta=+0 samples=6\n  queue_depth: first=0 last=5 delta=+5 samples=6\n  requests_total: first=2 last=7 delta=+5 samples=6\n  work_success_total: first=2 last=7 delta=+5 samples=6\nLOGS (42 lines -> 42 distinct, top 12 shown):\n  [app] x1: INFO:     127.0.0.1:38172 - \"GET /healthz HTTP/1.1\" 200 OK\n  [app] x1: INFO:     127.0.0.1:38178 - \"GET /healthz HTTP/1.1\" 200 OK\n  [app] x1: INFO:     127.0.0.1:38192 - \"GET /healthz HTTP/1.1\" 200 OK\n  [app] x1: INFO:     192.168.65.1:28782 - \"GET /healthz HTTP/1.1\" 200 OK\n  [app] x1: INFO:     192.168.65.1:28782 - \"GET /metrics HTTP/1.1\" 200 OK\n  [app] x1: INFO:     192.168.65.1:28782 - \"GET /work HTTP/1.1\" 200 OK\n  [app] x1: INFO:     192.168.65.1:29196 - \"GET /healthz HTTP/1.1\" 200 OK\n  [app] x1: INFO:     192.168.65.1:29196 - \"GET /metrics HTTP/1.1\" 200 OK\n  [app] x1: INFO:     192.168.65.1:29196 - \"GET /work HTTP/1.1\" 200 OK\n  [app] x1: INFO:     192.168.65.1:43654 - \"GET /healthz HTTP/1.1\" 200 OK\n  [app] x1: INFO:     192.168.65.1:43654 - \"GET /metrics HTTP/1.1\" 200 OK\n  [app] x1: INFO:     192.168.65.1:43654 - \"GET /work HTTP/1.1\" 200 OK\n  ... 30 more distinct messages omitted",
+      "generated_at": "2026-06-12T19:27:59.912194Z"
+    },
+    "proposal": {
+      "id": "rem-45f2d5d95a30",
+      "incident_id": "inc-d114ea98905d",
+      "hypothesis_cause": "Queue consumer stalled, deadlocked, or silently crashed, causing a growing backlog while sitting idle",
+      "steps": [
+        {
+          "order": 1,
+          "action": "restart_service",
+          "target": "worker",
+          "command": null,
+          "expected_effect": "Restarts the stalled or deadlocked worker process, clearing any silent crash state and allowing it to resume consuming jobs from the queue to reduce queue_depth."
+        }
+      ],
+      "rollback_plan": [
+        {
+          "order": 1,
+          "action": "scale_service",
+          "target": "worker",
+          "command": "{\"replicas\": 1}",
+          "expected_effect": "Ensures the worker service is explicitly set to its baseline replica count of 1, restoring the pre-remediation operational state in case the restart inadvertently caused a scale-down or failure to start."
+        }
+      ],
+      "risk_score": 0.1,
+      "blast_radius": "single_service",
+      "requires_approval": true
+    },
+    "gate": {
+      "approved": true,
+      "route": "auto",
+      "proposal": {
+        "id": "rem-45f2d5d95a30",
+        "incident_id": "inc-d114ea98905d",
+        "hypothesis_cause": "Queue consumer stalled, deadlocked, or silently crashed, causing a growing backlog while sitting idle",
+        "steps": [
+          {
+            "order": 1,
+            "action": "restart_service",
+            "target": "worker",
+            "command": null,
+            "expected_effect": "Restarts the stalled or deadlocked worker process, clearing any silent crash state and allowing it to resume consuming jobs from the queue to reduce queue_depth."
+          }
+        ],
+        "rollback_plan": [
+          {
+            "order": 1,
+            "action": "scale_service",
+            "target": "worker",
+            "command": "{\"replicas\": 1}",
+            "expected_effect": "Ensures the worker service is explicitly set to its baseline replica count of 1, restoring the pre-remediation operational state in case the restart inadvertently caused a scale-down or failure to start."
+          }
+        ],
+        "risk_score": 0.1,
+        "blast_radius": "single_service",
+        "requires_approval": false
+      },
+      "escalation_reasons": [],
+      "human_action": null,
+      "note": ""
+    },
+    "execution": {
+      "proposal_id": "rem-45f2d5d95a30",
+      "incident_id": "inc-d114ea98905d",
+      "success": true,
+      "step_outcomes": [
+        {
+          "step_order": 1,
+          "success": true,
+          "output": "restarted sandbox service 'worker'"
+        }
+      ],
+      "started_at": "2026-06-12T19:28:40.463112Z",
+      "finished_at": "2026-06-12T19:28:40.743153Z",
+      "error": null
+    },
+    "verification": {
+      "incident_id": "inc-d114ea98905d",
+      "resolved": true,
+      "checks": [
+        {
+          "name": "all_probes_healthy",
+          "passed": true,
+          "detail": "0/3 probes failing"
+        },
+        {
+          "name": "no_active_alerts",
+          "passed": true,
+          "detail": "none firing"
+        },
+        {
+          "name": "backlog_draining",
+          "passed": true,
+          "detail": "queue_depth 0->0, jobs_processed delta +2"
+        }
+      ],
+      "verified_at": "2026-06-12T19:28:41.309045Z"
+    },
+    "rolled_back": false,
+    "outcome_recorded": true,
+    "llm": {
+      "calls": 2,
+      "input_tokens": 7187,
+      "output_tokens": 4414,
+      "est_cost_usd": 0.018661,
+      "steps": [
+        "triage.root_cause",
+        "remediation.plan"
+      ]
+    },
+    "stage_seconds": {
+      "triage": 43.7856,
+      "remediation": 40.5498,
+      "execution": 0.2802,
+      "verification": 0.5662
+    }
+  },
+  "llm_records": [
+    {
+      "model": "qwen3.7-max",
+      "role": "reasoning",
+      "step": "triage.root_cause",
+      "input_tokens": 5629,
+      "output_tokens": 2217,
+      "est_cost_usd": 0.01535,
+      "tier": "free",
+      "free_tokens_used": 7846,
+      "voucher_tokens_used": 0
+    },
+    {
+      "model": "qwen3.7-plus",
+      "role": "default",
+      "step": "remediation.plan",
+      "input_tokens": 1558,
+      "output_tokens": 2197,
+      "est_cost_usd": 0.003311,
+      "tier": "free",
+      "free_tokens_used": 3755,
+      "voucher_tokens_used": 0
+    }
+  ],
+  "oracle_decisions": []
+}

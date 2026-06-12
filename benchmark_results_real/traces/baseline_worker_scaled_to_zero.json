@@ -1,0 +1,37 @@
+{
+  "baseline": {
+    "incident_id": "inc-04bbbea0b0f3",
+    "root_cause": "Worker service is stuck or unresponsive, failing to consume and process jobs from the queue, resulting in increasing queue depth while jobs_processed remains flat.",
+    "confidence": 0.9,
+    "steps": [
+      {
+        "order": 1,
+        "action": "restart_service",
+        "target": "worker",
+        "command": null,
+        "expected_effect": ""
+      }
+    ],
+    "schema_failed": false,
+    "error": null
+  },
+  "application": {
+    "applied": true,
+    "success": true,
+    "invalid_tool_calls": 0,
+    "detail": "all steps applied"
+  },
+  "llm_records": [
+    {
+      "model": "qwen3.7-max",
+      "role": "reasoning",
+      "step": "baseline.single_prompt",
+      "input_tokens": 927,
+      "output_tokens": 707,
+      "est_cost_usd": 0.00381,
+      "tier": "free",
+      "free_tokens_used": 1634,
+      "voucher_tokens_used": 0
+    }
+  ]
+}

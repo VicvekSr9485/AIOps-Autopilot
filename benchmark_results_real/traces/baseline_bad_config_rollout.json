@@ -1,0 +1,37 @@
+{
+  "baseline": {
+    "incident_id": "inc-ff8a9c72cafa",
+    "root_cause": "The app service is configured with an invalid feature_mode 'turbo_v2', causing all work requests to fail with 500 Internal Server Error.",
+    "confidence": 1.0,
+    "steps": [
+      {
+        "order": 1,
+        "action": "rollback",
+        "target": "app",
+        "command": null,
+        "expected_effect": ""
+      }
+    ],
+    "schema_failed": false,
+    "error": null
+  },
+  "application": {
+    "applied": true,
+    "success": true,
+    "invalid_tool_calls": 0,
+    "detail": "all steps applied"
+  },
+  "llm_records": [
+    {
+      "model": "qwen3.7-max",
+      "role": "reasoning",
+      "step": "baseline.single_prompt",
+      "input_tokens": 915,
+      "output_tokens": 329,
+      "est_cost_usd": 0.002377,
+      "tier": "free",
+      "free_tokens_used": 1244,
+      "voucher_tokens_used": 0
+    }
+  ]
+}

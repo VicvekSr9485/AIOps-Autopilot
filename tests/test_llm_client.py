@@ -1,7 +1,9 @@
 import json
 
+import pytest
+
 from autopilot.config import load_llm_config
-from autopilot.llm.client import QwenClient, _fixture_key
+from autopilot.llm.client import QwenClient, RunTokenCapExceeded, _fixture_key
 
 MESSAGES = [{"role": "user", "content": "Service checkout-api is returning 503s. Why?"}]
 
@@ -39,3 +41,20 @@ def test_fixture_replay(tmp_path, monkeypatch):
     r = QwenClient(config=config).complete("default", MESSAGES, step="triage")
     assert r.text == "recorded: OOM in checkout-api"
     assert (r.input_tokens, r.output_tokens) == (50, 10)
+
+
+def test_run_token_cap_refuses_before_the_call(monkeypatch):
+    monkeypatch.setenv("AUTOPILOT_RUN_TOKEN_CAP", "20")
+    client = QwenClient(config=load_llm_config())
+    client.complete("default", MESSAGES, step="one")  # spends >20 mock tokens
+    spent_after_first = len(client.meter.records)
+
+    with pytest.raises(RunTokenCapExceeded, match="run token cap 20"):
+        client.complete("default", MESSAGES, step="two")
+    # the refused call was never metered: it died before reaching the model
+    assert len(client.meter.records) == spent_after_first
+
+
+def test_no_cap_when_env_unset(monkeypatch):
+    monkeypatch.delenv("AUTOPILOT_RUN_TOKEN_CAP", raising=False)
+    assert load_llm_config().run_token_cap is None

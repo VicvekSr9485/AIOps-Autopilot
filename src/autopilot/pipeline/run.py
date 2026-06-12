@@ -99,6 +99,7 @@ async def run_incident(
     confidence_threshold: float = 0.75,
     risk_threshold: float = 0.4,
     verify_interval_s: float = 1.0,
+    verify_settle_s: float = 0.0,
     context_mode: ContextMode = "summarized",
 ) -> IncidentRunReport:
     meter_start = len(client.meter.records)
@@ -133,7 +134,8 @@ async def run_incident(
             _timed("execution", t0)
             t0 = time.perf_counter()
             verification = await verify(incident.id, servers,
-                                        interval_s=verify_interval_s)
+                                        interval_s=verify_interval_s,
+                                        settle_timeout_s=verify_settle_s)
             _timed("verification", t0)
             resolved = execution.success and verification.resolved
             if not resolved and gate.proposal.rollback_plan:

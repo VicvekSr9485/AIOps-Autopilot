@@ -1,0 +1,44 @@
+{
+  "baseline": {
+    "incident_id": "inc-47502214cc8d",
+    "root_cause": "Database connection exhaustion (max_connections reached), causing app health checks and work requests to fail",
+    "confidence": 0.95,
+    "steps": [
+      {
+        "order": 1,
+        "action": "restart_service",
+        "target": "db",
+        "command": null,
+        "expected_effect": ""
+      },
+      {
+        "order": 2,
+        "action": "restart_service",
+        "target": "app",
+        "command": null,
+        "expected_effect": ""
+      }
+    ],
+    "schema_failed": false,
+    "error": null
+  },
+  "application": {
+    "applied": true,
+    "success": true,
+    "invalid_tool_calls": 0,
+    "detail": "all steps applied"
+  },
+  "llm_records": [
+    {
+      "model": "qwen3.7-max",
+      "role": "reasoning",
+      "step": "baseline.single_prompt",
+      "input_tokens": 973,
+      "output_tokens": 845,
+      "est_cost_usd": 0.004385,
+      "tier": "free",
+      "free_tokens_used": 1818,
+      "voucher_tokens_used": 0
+    }
+  ]
+}

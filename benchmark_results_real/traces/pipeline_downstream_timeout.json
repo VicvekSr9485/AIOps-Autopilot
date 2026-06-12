@@ -1,0 +1,221 @@
+{
+  "report": {
+    "incident_id": "inc-8c1c65729033",
+    "resolved": true,
+    "triage": {
+      "incident_id": "inc-8c1c65729033",
+      "hypotheses": [
+        {
+          "incident_id": "inc-8c1c65729033",
+          "cause": "Downstream service timeout or unavailability",
+          "confidence": 0.95,
+          "evidence": [
+            {
+              "kind": "log",
+              "pointer": "log:app",
+              "excerpt": "work_failed {\"reason\": \"downstream_timeout\", \"error\": \"timed out\"}"
+            },
+            {
+              "kind": "log",
+              "pointer": "log:app",
+              "excerpt": "INFO:     192.168.65.1:36797 - \"GET /work HTTP/1.1\" 504 Gateway Timeout"
+            },
+            {
+              "kind": "metric",
+              "pointer": "metric:queue_depth",
+              "excerpt": "first=0 last=0 delta=+0"
+            }
+          ],
+          "reasoning_summary": "The application is returning 504 Gateway Timeout on the /work endpoint and logging downstream_timeout errors. Health checks remain healthy (200 OK), and queue_depth is 0, indicating the failure is in a synchronous downstream dependency call rather than a queue processing backlog or internal app crash."
+        },
+        {
+          "incident_id": "inc-8c1c65729033",
+          "cause": "Database connection exhaustion or hung queries causing downstream timeouts",
+          "confidence": 0.6,
+          "evidence": [
+            {
+              "kind": "log",
+              "pointer": "log:db",
+              "excerpt": "GRANT"
+            },
+            {
+              "kind": "log",
+              "pointer": "log:app",
+              "excerpt": "work_failed {\"reason\": \"downstream_timeout\", \"error\": \"timed out\"}"
+            },
+            {
+              "kind": "metric",
+              "pointer": "metric:jobs_processed",
+              "excerpt": "first=1 last=1 delta=+0"
+            }
+          ],
+          "reasoning_summary": "The downstream service timing out could be the database itself. The DB logs show administrative commands (GRANT) but lack normal query processing logs, which might indicate connections are hung, exhausted, or blocked by locks, leading the app to time out when attempting to process work."
+        },
+        {
+          "incident_id": "inc-8c1c65729033",
+          "cause": "Network partition or DNS resolution failure between app and downstream dependency",
+          "confidence": 0.4,
+          "evidence": [
+            {
+              "kind": "log",
+              "pointer": "log:app",
+              "excerpt": "work_failed {\"reason\": \"downstream_timeout\", \"error\": \"timed out\"}"
+            },
+            {
+              "kind": "metric",
+              "pointer": "metric:errors_total",
+              "excerpt": "first=1 last=6 delta=+5"
+            }
+          ],
+          "reasoning_summary": "A network issue preventing the app from reaching its downstream dependency would result in connection timeouts. This aligns with the downstream_timeout errors and 504 responses, while the app's own health checks (which likely don't traverse the same network path or depend on the same service) continue to succeed."
+        }
+      ],
+      "consulted_runbooks": [
+        "Queue backlog growing while consumers sit idle (score=0.0878): Symptoms: queue_depth grows monotonically; jobs_processed counter stops advancing; user-facing requests and health checks stay green \u2014 a silent backlog with no error logs.\nDiagnosis: compare producer and consumer rates over a window; check the worker/consumer process state (paused, crashed, deadlocked); verify the queue itself accepts reads.\nRemediation: restart (or unpause) the worker service so ",
+        "Queue consumer scaled to zero replicas (score=0.0787): Symptoms: worker_shutdown (SIGTERM) in the logs and then silence; queue_depth climbing while jobs_processed stays flat; health checks green because nothing user-facing is failing yet.\nRemediation: scale the consumer back to its baseline replica count. IMPORTANT: restarting the service is a NO-OP when zero replicas exist \u2014 there is no container to restart; an explicit scale-up is required. Treat th",
+        "Config rollout breaks requests AND wedges queue consumers (score=0.0763): Symptoms: work_failed errors naming an invalid setting (e.g. invalid_feature_mode) right after a rollout, while queue_depth sits above zero without draining and jobs_processed stops advancing.\nRemediation: roll the configuration back AND restart the consumer as well \u2014 a consumer that loaded the bad config stays wedged after the rollback, so the backlog will not drain on its own. Verify both the er"
+      ],
+      "telemetry_summary": "ALERT: sandbox.app.work_errors (severity=high, source=sandbox-probe)\n  0/6 health checks failing, 6/6 work requests failing\nMETRICS (30 points, windowed):\n  errors_total: first=1 last=6 delta=+5 samples=6\n  jobs_processed: first=1 last=1 delta=+0 samples=6\n  queue_depth: first=0 last=0 delta=+0 samples=6\n  requests_total: first=2 last=7 delta=+5 samples=6\n  work_success_total: first=1 last=1 delta=+0 samples=6\nLOGS (37 lines -> 32 distinct, top 12 shown):\n  [app] x6: work_failed {\"reason\": \"downstream_timeout\", \"error\": \"timed out\"}\n  [app] x1: INFO:     127.0.0.1:38634 - \"GET /healthz HTTP/1.1\" 200 OK\n  [app] x1: INFO:     127.0.0.1:39656 - \"GET /healthz HTTP/1.1\" 200 OK\n  [app] x1: INFO:     127.0.0.1:39666 - \"GET /healthz HTTP/1.1\" 200 OK\n  [app] x1: INFO:     127.0.0.1:44336 - \"GET /healthz HTTP/1.1\" 200 OK\n  [app] x1: INFO:     127.0.0.1:44352 - \"GET /healthz HTTP/1.1\" 200 OK\n  [app] x1: INFO:     127.0.0.1:44368 - \"GET /healthz HTTP/1.1\" 200 OK\n  [app] x1: INFO:     127.0.0.1:44376 - \"GET /healthz HTTP/1.1\" 200 OK\n  [app] x1: INFO:     192.168.65.1:36797 - \"GET /healthz HTTP/1.1\" 200 OK\n  [app] x1: INFO:     192.168.65.1:36797 - \"GET /metrics HTTP/1.1\" 200 OK\n  [app] x1: INFO:     192.168.65.1:36797 - \"GET /work HTTP/1.1\" 504 Gateway Timeout\n  [app] x1: INFO:     192.168.65.1:42996 - \"GET /healthz HTTP/1.1\" 200 OK\n  ... 20 more distinct messages omitted",
+      "generated_at": "2026-06-12T19:21:34.682352Z"
+    },
+    "proposal": {
+      "id": "rem-f3506659cc79",
+      "incident_id": "inc-8c1c65729033",
+      "hypothesis_cause": "Downstream service timeout or unavailability",
+      "steps": [
+        {
+          "order": 1,
+          "action": "restart_service",
+          "target": "downstream",
+          "command": null,
+          "expected_effect": "Restarts the downstream service to clear any hung state or temporary unavailability, resolving the timeout errors on the app's /work endpoint."
+        }
+      ],
+      "rollback_plan": [
+        {
+          "order": 1,
+          "action": "restart_service",
+          "target": "downstream",
+          "command": null,
+          "expected_effect": "Re-applies a restart to the downstream service to clear any subsequent transient issues, as the initial restart does not alter persistent configuration state."
+        }
+      ],
+      "risk_score": 0.2,
+      "blast_radius": "single_service",
+      "requires_approval": true
+    },
+    "gate": {
+      "approved": true,
+      "route": "auto",
+      "proposal": {
+        "id": "rem-f3506659cc79",
+        "incident_id": "inc-8c1c65729033",
+        "hypothesis_cause": "Downstream service timeout or unavailability",
+        "steps": [
+          {
+            "order": 1,
+            "action": "restart_service",
+            "target": "downstream",
+            "command": null,
+            "expected_effect": "Restarts the downstream service to clear any hung state or temporary unavailability, resolving the timeout errors on the app's /work endpoint."
+          }
+        ],
+        "rollback_plan": [
+          {
+            "order": 1,
+            "action": "restart_service",
+            "target": "downstream",
+            "command": null,
+            "expected_effect": "Re-applies a restart to the downstream service to clear any subsequent transient issues, as the initial restart does not alter persistent configuration state."
+          }
+        ],
+        "risk_score": 0.2,
+        "blast_radius": "single_service",
+        "requires_approval": false
+      },
+      "escalation_reasons": [],
+      "human_action": null,
+      "note": ""
+    },
+    "execution": {
+      "proposal_id": "rem-f3506659cc79",
+      "incident_id": "inc-8c1c65729033",
+      "success": true,
+      "step_outcomes": [
+        {
+          "step_order": 1,
+          "success": true,
+          "output": "restarted sandbox service 'downstream'"
+        }
+      ],
+      "started_at": "2026-06-12T19:22:10.213738Z",
+      "finished_at": "2026-06-12T19:22:10.645753Z",
+      "error": null
+    },
+    "verification": {
+      "incident_id": "inc-8c1c65729033",
+      "resolved": true,
+      "checks": [
+        {
+          "name": "all_probes_healthy",
+          "passed": true,
+          "detail": "0/3 probes failing"
+        },
+        {
+          "name": "no_active_alerts",
+          "passed": true,
+          "detail": "none firing"
+        },
+        {
+          "name": "backlog_draining",
+          "passed": true,
+          "detail": "queue_depth 0->0, jobs_processed delta +2"
+        }
+      ],
+      "verified_at": "2026-06-12T19:22:13.491845Z"
+    },
+    "rolled_back": false,
+    "outcome_recorded": true,
+    "llm": {
+      "calls": 2,
+      "input_tokens": 2992,
+      "output_tokens": 4875,
+      "est_cost_usd": 0.015954,
+      "steps": [
+        "triage.root_cause",
+        "remediation.plan"
+      ]
+    },
+    "stage_seconds": {
+      "triage": 63.5966,
+      "remediation": 35.5305,
+      "execution": 0.4322,
+      "verification": 2.8464
+    }
+  },
+  "llm_records": [
+    {
+      "model": "qwen3.7-max",
+      "role": "reasoning",
+      "step": "triage.root_cause",
+      "input_tokens": 1536,
+      "output_tokens": 2967,
+      "est_cost_usd": 0.013046,
+      "tier": "free",
+      "free_tokens_used": 4503,
+      "voucher_tokens_used": 0
+    },
+    {
+      "model": "qwen3.7-plus",
+      "role": "default",
+      "step": "remediation.plan",
+      "input_tokens": 1456,
+      "output_tokens": 1908,
+      "est_cost_usd": 0.002908,
+      "tier": "free",
+      "free_tokens_used": 3364,
+      "voucher_tokens_used": 0
+    }
+  ],
+  "oracle_decisions": []
+}

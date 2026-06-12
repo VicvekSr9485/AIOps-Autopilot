@@ -1,0 +1,203 @@
+{
+  "report": {
+    "incident_id": "inc-f17c4e6c51a5",
+    "resolved": true,
+    "triage": {
+      "incident_id": "inc-f17c4e6c51a5",
+      "hypotheses": [
+        {
+          "incident_id": "inc-f17c4e6c51a5",
+          "cause": "Invalid feature mode configuration ('turbo_v2') causing all work requests to fail with 500 errors",
+          "confidence": 0.95,
+          "evidence": [
+            {
+              "kind": "log",
+              "pointer": "log:app",
+              "excerpt": "{\"ts\": \"2026-06-12T19:18:48.349755+00:00\", \"service\": \"app\", \"event\": \"work_failed\", \"reason\": \"invalid_feature_mode\", \"feature_mode\": \"turbo_v2\"}"
+            },
+            {
+              "kind": "log",
+              "pointer": "log:app",
+              "excerpt": "192.168.65.1:49767 - \"GET /work HTTP/1.1\" 500 Internal Server Error"
+            },
+            {
+              "kind": "metric",
+              "pointer": "metric:errors_total",
+              "excerpt": "errors_total increasing in lockstep with requests_total while work_success_total remains 0"
+            }
+          ],
+          "reasoning_summary": "Following an application restart at 19:18:46, all subsequent /work requests fail with HTTP 500. The application logs explicitly cite 'invalid_feature_mode' with the value 'turbo_v2' as the reason for work failure. This indicates a misconfiguration or invalid feature flag introduced during or right before the restart."
+        },
+        {
+          "incident_id": "inc-f17c4e6c51a5",
+          "cause": "Faulty deployment or configuration change applied during the 19:18:46 application restart",
+          "confidence": 0.85,
+          "evidence": [
+            {
+              "kind": "log",
+              "pointer": "log:app",
+              "excerpt": "2026-06-12T19:18:46.861420800Z INFO:     Shutting down"
+            },
+            {
+              "kind": "log",
+              "pointer": "log:app",
+              "excerpt": "2026-06-12T19:18:47.518654300Z INFO:     Started server process [1]"
+            },
+            {
+              "kind": "log",
+              "pointer": "log:app",
+              "excerpt": "2026-06-12T19:18:46.731260+00:00 ... \"event\": \"work_done\""
+            }
+          ],
+          "reasoning_summary": "The application successfully processed work before shutting down at 19:18:46. Upon restarting, it immediately began failing with an invalid feature mode error, strongly suggesting that the restart was part of a deployment or configuration update that introduced the invalid 'turbo_v2' setting."
+        }
+      ],
+      "consulted_runbooks": [
+        "Queue consumer scaled to zero replicas (score=0.1046): Symptoms: worker_shutdown (SIGTERM) in the logs and then silence; queue_depth climbing while jobs_processed stays flat; health checks green because nothing user-facing is failing yet.\nRemediation: scale the consumer back to its baseline replica count. IMPORTANT: restarting the service is a NO-OP when zero replicas exist \u2014 there is no container to restart; an explicit scale-up is required. Treat th",
+        "Queue backlog growing while consumers sit idle (score=0.0771): Symptoms: queue_depth grows monotonically; jobs_processed counter stops advancing; user-facing requests and health checks stay green \u2014 a silent backlog with no error logs.\nDiagnosis: compare producer and consumer rates over a window; check the worker/consumer process state (paused, crashed, deadlocked); verify the queue itself accepts reads.\nRemediation: restart (or unpause) the worker service so ",
+        "Postgres connection slots exhausted / too many clients (score=0.0674): Symptoms: health checks report the database component down; application requests fail with 'remaining connection slots are reserved' or 'sorry, too many clients already'; errors appear without a deploy or config change.\nDiagnosis: inspect pg_stat_activity for idle or long-running sessions (state, query_start, usename); compare session count against max_connections; look for batch jobs or leaked po"
+      ],
+      "telemetry_summary": "ALERT: sandbox.app.health_degraded (severity=medium, source=sandbox-probe)\n  1/6 health checks failing, 6/6 work requests failing\nMETRICS (25 points, windowed):\n  errors_total: first=1 last=5 delta=+4 samples=5\n  jobs_processed: first=1 last=1 delta=+0 samples=5\n  queue_depth: first=0 last=0 delta=+0 samples=5\n  requests_total: first=1 last=5 delta=+4 samples=5\n  work_success_total: first=0 last=0 delta=+0 samples=5\nLOGS (38 lines -> 34 distinct, top 12 shown):\n  [app] x5: work_failed {\"reason\": \"invalid_feature_mode\", \"feature_mode\": \"turbo_v2\"}\n  [app] x1: INFO:     127.0.0.1:42002 - \"GET /healthz HTTP/1.1\" 200 OK\n  [app] x1: INFO:     192.168.65.1:23061 - \"GET /healthz HTTP/1.1\" 200 OK\n  [app] x1: INFO:     192.168.65.1:23061 - \"GET /metrics HTTP/1.1\" 200 OK\n  [app] x1: INFO:     192.168.65.1:23061 - \"GET /work HTTP/1.1\" 500 Internal Server Error\n  [app] x1: INFO:     192.168.65.1:23343 - \"GET /healthz HTTP/1.1\" 200 OK\n  [app] x1: INFO:     192.168.65.1:23343 - \"GET /metrics HTTP/1.1\" 200 OK\n  [app] x1: INFO:     192.168.65.1:23343 - \"GET /work HTTP/1.1\" 500 Internal Server Error\n  [app] x1: INFO:     192.168.65.1:49767 - \"GET /healthz HTTP/1.1\" 200 OK\n  [app] x1: INFO:     192.168.65.1:49767 - \"GET /metrics HTTP/1.1\" 200 OK\n  [app] x1: INFO:     192.168.65.1:49767 - \"GET /work HTTP/1.1\" 500 Internal Server Error\n  [app] x1: INFO:     192.168.65.1:54910 - \"GET /healthz HTTP/1.1\" 200 OK\n  ... 22 more distinct messages omitted",
+      "generated_at": "2026-06-12T19:19:30.594967Z"
+    },
+    "proposal": {
+      "id": "rem-6db8d92c92c7",
+      "incident_id": "inc-f17c4e6c51a5",
+      "hypothesis_cause": "Invalid feature mode configuration ('turbo_v2') causing all work requests to fail with 500 errors",
+      "steps": [
+        {
+          "order": 1,
+          "action": "rollback",
+          "target": "app",
+          "command": null,
+          "expected_effect": "Restores the canonical app configuration, removing the invalid 'turbo_v2' feature mode and resolving the 500 errors on /work requests."
+        }
+      ],
+      "rollback_plan": [
+        {
+          "order": 1,
+          "action": "apply_config",
+          "target": "app",
+          "command": "{\"feature_mode\": \"turbo_v2\"}",
+          "expected_effect": "Restores the pre-remediation state with the invalid feature mode configuration."
+        }
+      ],
+      "risk_score": 0.1,
+      "blast_radius": "single_service",
+      "requires_approval": true
+    },
+    "gate": {
+      "approved": true,
+      "route": "auto",
+      "proposal": {
+        "id": "rem-6db8d92c92c7",
+        "incident_id": "inc-f17c4e6c51a5",
+        "hypothesis_cause": "Invalid feature mode configuration ('turbo_v2') causing all work requests to fail with 500 errors",
+        "steps": [
+          {
+            "order": 1,
+            "action": "rollback",
+            "target": "app",
+            "command": null,
+            "expected_effect": "Restores the canonical app configuration, removing the invalid 'turbo_v2' feature mode and resolving the 500 errors on /work requests."
+          }
+        ],
+        "rollback_plan": [
+          {
+            "order": 1,
+            "action": "apply_config",
+            "target": "app",
+            "command": "{\"feature_mode\": \"turbo_v2\"}",
+            "expected_effect": "Restores the pre-remediation state with the invalid feature mode configuration."
+          }
+        ],
+        "risk_score": 0.1,
+        "blast_radius": "single_service",
+        "requires_approval": false
+      },
+      "escalation_reasons": [],
+      "human_action": null,
+      "note": ""
+    },
+    "execution": {
+      "proposal_id": "rem-6db8d92c92c7",
+      "incident_id": "inc-f17c4e6c51a5",
+      "success": true,
+      "step_outcomes": [
+        {
+          "step_order": 1,
+          "success": true,
+          "output": "did restore canonical config (reverting feature_mode) and restart app"
+        }
+      ],
+      "started_at": "2026-06-12T19:19:59.318602Z",
+      "finished_at": "2026-06-12T19:19:59.927718Z",
+      "error": null
+    },
+    "verification": {
+      "incident_id": "inc-f17c4e6c51a5",
+      "resolved": true,
+      "checks": [
+        {
+          "name": "all_probes_healthy",
+          "passed": true,
+          "detail": "0/3 probes failing"
+        },
+        {
+          "name": "no_active_alerts",
+          "passed": true,
+          "detail": "none firing"
+        },
+        {
+          "name": "backlog_draining",
+          "passed": true,
+          "detail": "queue_depth 0->0, jobs_processed delta +2"
+        }
+      ],
+      "verified_at": "2026-06-12T19:20:02.616778Z"
+    },
+    "rolled_back": false,
+    "outcome_recorded": true,
+    "llm": {
+      "calls": 2,
+      "input_tokens": 6396,
+      "output_tokens": 3513,
+      "est_cost_usd": 0.015917,
+      "steps": [
+        "triage.root_cause",
+        "remediation.plan"
+      ]
+    },
+    "stage_seconds": {
+      "triage": 37.9903,
+      "remediation": 28.7227,
+      "execution": 0.6094,
+      "verification": 2.6891
+    }
+  },
+  "llm_records": [
+    {
+      "model": "qwen3.7-max",
+      "role": "reasoning",
+      "step": "triage.root_cause",
+      "input_tokens": 4842,
+      "output_tokens": 1972,
+      "est_cost_usd": 0.013447,
+      "tier": "free",
+      "free_tokens_used": 6814,
+      "voucher_tokens_used": 0
+    },
+    {
+      "model": "qwen3.7-plus",
+      "role": "default",
+      "step": "remediation.plan",
+      "input_tokens": 1554,
+      "output_tokens": 1541,
+      "est_cost_usd": 0.00247,
+      "tier": "free",
+      "free_tokens_used": 3095,
+      "voucher_tokens_used": 0
+    }
+  ],
+  "oracle_decisions": []
+}

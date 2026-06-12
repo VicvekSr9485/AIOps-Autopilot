@@ -1,0 +1,37 @@
+{
+  "baseline": {
+    "incident_id": "inc-c3cbda1a8d79",
+    "root_cause": "db connection limit exceeded",
+    "confidence": 0.95,
+    "steps": [
+      {
+        "order": 1,
+        "action": "restart_service",
+        "target": "db",
+        "command": null,
+        "expected_effect": ""
+      }
+    ],
+    "schema_failed": false,
+    "error": null
+  },
+  "application": {
+    "applied": true,
+    "success": true,
+    "invalid_tool_calls": 0,
+    "detail": "all steps applied"
+  },
+  "llm_records": [
+    {
+      "model": "qwen3.7-max",
+      "role": "reasoning",
+      "step": "baseline.single_prompt",
+      "input_tokens": 971,
+      "output_tokens": 998,
+      "est_cost_usd": 0.004956,
+      "tier": "free",
+      "free_tokens_used": 1969,
+      "voucher_tokens_used": 0
+    }
+  ]
+}

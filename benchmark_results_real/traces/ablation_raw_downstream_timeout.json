@@ -1,0 +1,203 @@
+{
+  "report": {
+    "incident_id": "inc-90228aa6e2b1",
+    "resolved": true,
+    "triage": {
+      "incident_id": "inc-90228aa6e2b1",
+      "hypotheses": [
+        {
+          "incident_id": "inc-90228aa6e2b1",
+          "cause": "Downstream service (`autopilot-sbx-downstream`) is unresponsive, crashed, or deadlocked after the initial request, causing the `app` service to timeout on all subsequent `/work` requests.",
+          "confidence": 0.95,
+          "evidence": [
+            {
+              "kind": "log",
+              "pointer": "log:app",
+              "excerpt": "{\"ts\": \"2026-06-12T19:23:19.053914+00:00\", \"service\": \"app\", \"event\": \"work_failed\", \"reason\": \"downstream_timeout\", \"error\": \"timed out\"}"
+            },
+            {
+              "kind": "log",
+              "pointer": "log:downstream",
+              "excerpt": "2026-06-12T19:23:17.387896925Z INFO:     172.25.0.6:55980 - \"GET / HTTP/1.1\" 200 OK"
+            },
+            {
+              "kind": "log",
+              "pointer": "log:app",
+              "excerpt": "INFO:     192.168.65.1:26097 - \"GET /work HTTP/1.1\" 504 Gateway Timeout"
+            },
+            {
+              "kind": "metric",
+              "pointer": "metric:errors_total",
+              "excerpt": "errors_total increasing from 1 to 9 while work_success_total remains stuck at 1"
+            }
+          ],
+          "reasoning_summary": "The app service is consistently failing work requests with a 'downstream_timeout' reason and returning 504 Gateway Timeout to clients. The downstream service only logged a single successful request at the beginning of the incident and then went completely silent, strongly indicating that it has crashed, hung, or become unresponsive, preventing the app from completing any further work."
+        },
+        {
+          "incident_id": "inc-90228aa6e2b1",
+          "cause": "Network partition or connectivity issue between the `app` and `downstream` services after the initial successful request.",
+          "confidence": 0.4,
+          "evidence": [
+            {
+              "kind": "log",
+              "pointer": "log:app",
+              "excerpt": "{\"ts\": \"2026-06-12T19:23:21.638039+00:00\", \"service\": \"app\", \"event\": \"work_failed\", \"reason\": \"downstream_timeout\", \"error\": \"timed out\"}"
+            },
+            {
+              "kind": "log",
+              "pointer": "log:downstream",
+              "excerpt": "No further logs observed after 2026-06-12T19:23:17.387896925Z"
+            }
+          ],
+          "reasoning_summary": "While a downstream crash is more likely, a sudden network partition or routing issue between the app and downstream containers could also manifest as timeouts in the app and silence in the downstream logs if the downstream service is still running but isolated."
+        }
+      ],
+      "consulted_runbooks": [
+        "Queue backlog growing while consumers sit idle (score=0.0975): Symptoms: queue_depth grows monotonically; jobs_processed counter stops advancing; user-facing requests and health checks stay green \u2014 a silent backlog with no error logs.\nDiagnosis: compare producer and consumer rates over a window; check the worker/consumer process state (paused, crashed, deadlocked); verify the queue itself accepts reads.\nRemediation: restart (or unpause) the worker service so ",
+        "Config rollout breaks requests AND wedges queue consumers (score=0.0927): Symptoms: work_failed errors naming an invalid setting (e.g. invalid_feature_mode) right after a rollout, while queue_depth sits above zero without draining and jobs_processed stops advancing.\nRemediation: roll the configuration back AND restart the consumer as well \u2014 a consumer that loaded the bad config stays wedged after the rollback, so the backlog will not drain on its own. Verify both the er",
+        "Queue consumer scaled to zero replicas (score=0.0824): Symptoms: worker_shutdown (SIGTERM) in the logs and then silence; queue_depth climbing while jobs_processed stays flat; health checks green because nothing user-facing is failing yet.\nRemediation: scale the consumer back to its baseline replica count. IMPORTANT: restarting the service is a NO-OP when zero replicas exist \u2014 there is no container to restart; an explicit scale-up is required. Treat th"
+      ],
+      "telemetry_summary": "ALERT: sandbox.app.work_errors (severity=high, source=sandbox-probe)\n  0/6 health checks failing, 6/6 work requests failing\nMETRICS (30 points, windowed):\n  errors_total: first=1 last=6 delta=+5 samples=6\n  jobs_processed: first=1 last=1 delta=+0 samples=6\n  queue_depth: first=0 last=0 delta=+0 samples=6\n  requests_total: first=2 last=7 delta=+5 samples=6\n  work_success_total: first=1 last=1 delta=+0 samples=6\nLOGS (37 lines -> 32 distinct, top 12 shown):\n  [app] x6: work_failed {\"reason\": \"downstream_timeout\", \"error\": \"timed out\"}\n  [app] x1: INFO:     127.0.0.1:35944 - \"GET /healthz HTTP/1.1\" 200 OK\n  [app] x1: INFO:     127.0.0.1:38142 - \"GET /healthz HTTP/1.1\" 200 OK\n  [app] x1: INFO:     127.0.0.1:60704 - \"GET /healthz HTTP/1.1\" 200 OK\n  [app] x1: INFO:     127.0.0.1:60714 - \"GET /healthz HTTP/1.1\" 200 OK\n  [app] x1: INFO:     127.0.0.1:60722 - \"GET /healthz HTTP/1.1\" 200 OK\n  [app] x1: INFO:     127.0.0.1:60726 - \"GET /healthz HTTP/1.1\" 200 OK\n  [app] x1: INFO:     127.0.0.1:60736 - \"GET /healthz HTTP/1.1\" 200 OK\n  [app] x1: INFO:     192.168.65.1:20801 - \"GET /healthz HTTP/1.1\" 200 OK\n  [app] x1: INFO:     192.168.65.1:20801 - \"GET /metrics HTTP/1.1\" 200 OK\n  [app] x1: INFO:     192.168.65.1:20801 - \"GET /work HTTP/1.1\" 504 Gateway Timeout\n  [app] x1: INFO:     192.168.65.1:20808 - \"GET /healthz HTTP/1.1\" 200 OK\n  ... 20 more distinct messages omitted",
+      "generated_at": "2026-06-12T19:24:30.504425Z"
+    },
+    "proposal": {
+      "id": "rem-4e84df931f43",
+      "incident_id": "inc-90228aa6e2b1",
+      "hypothesis_cause": "Downstream service (`autopilot-sbx-downstream`) is unresponsive, crashed, or deadlocked after the initial request, causing the `app` service to timeout on all subsequent `/work` requests.",
+      "steps": [
+        {
+          "order": 1,
+          "action": "restart_service",
+          "target": "downstream",
+          "command": null,
+          "expected_effect": "Restarts the unresponsive downstream service to clear any deadlock or crash state, allowing it to accept requests from the app service again."
+        }
+      ],
+      "rollback_plan": [
+        {
+          "order": 1,
+          "action": "restart_service",
+          "target": "downstream",
+          "command": null,
+          "expected_effect": "Re-restarts the downstream service if the initial restart did not resolve the issue or introduced a new transient failure."
+        }
+      ],
+      "risk_score": 0.2,
+      "blast_radius": "single_service",
+      "requires_approval": true
+    },
+    "gate": {
+      "approved": true,
+      "route": "auto",
+      "proposal": {
+        "id": "rem-4e84df931f43",
+        "incident_id": "inc-90228aa6e2b1",
+        "hypothesis_cause": "Downstream service (`autopilot-sbx-downstream`) is unresponsive, crashed, or deadlocked after the initial request, causing the `app` service to timeout on all subsequent `/work` requests.",
+        "steps": [
+          {
+            "order": 1,
+            "action": "restart_service",
+            "target": "downstream",
+            "command": null,
+            "expected_effect": "Restarts the unresponsive downstream service to clear any deadlock or crash state, allowing it to accept requests from the app service again."
+          }
+        ],
+        "rollback_plan": [
+          {
+            "order": 1,
+            "action": "restart_service",
+            "target": "downstream",
+            "command": null,
+            "expected_effect": "Re-restarts the downstream service if the initial restart did not resolve the issue or introduced a new transient failure."
+          }
+        ],
+        "risk_score": 0.2,
+        "blast_radius": "single_service",
+        "requires_approval": false
+      },
+      "escalation_reasons": [],
+      "human_action": null,
+      "note": ""
+    },
+    "execution": {
+      "proposal_id": "rem-4e84df931f43",
+      "incident_id": "inc-90228aa6e2b1",
+      "success": true,
+      "step_outcomes": [
+        {
+          "step_order": 1,
+          "success": true,
+          "output": "restarted sandbox service 'downstream'"
+        }
+      ],
+      "started_at": "2026-06-12T19:24:55.403071Z",
+      "finished_at": "2026-06-12T19:24:55.844721Z",
+      "error": null
+    },
+    "verification": {
+      "incident_id": "inc-90228aa6e2b1",
+      "resolved": true,
+      "checks": [
+        {
+          "name": "all_probes_healthy",
+          "passed": true,
+          "detail": "0/3 probes failing"
+        },
+        {
+          "name": "no_active_alerts",
+          "passed": true,
+          "detail": "none firing"
+        },
+        {
+          "name": "backlog_draining",
+          "passed": true,
+          "detail": "queue_depth 0->0, jobs_processed delta +2"
+        }
+      ],
+      "verified_at": "2026-06-12T19:24:58.611747Z"
+    },
+    "rolled_back": false,
+    "outcome_recorded": true,
+    "llm": {
+      "calls": 2,
+      "input_tokens": 6911,
+      "output_tokens": 3989,
+      "est_cost_usd": 0.018781,
+      "steps": [
+        "triage.root_cause",
+        "remediation.plan"
+      ]
+    },
+    "stage_seconds": {
+      "triage": 58.397,
+      "remediation": 24.8979,
+      "execution": 0.4418,
+      "verification": 2.7672
+    }
+  },
+  "llm_records": [
+    {
+      "model": "qwen3.7-max",
+      "role": "reasoning",
+      "step": "triage.root_cause",
+      "input_tokens": 5280,
+      "output_tokens": 2653,
+      "est_cost_usd": 0.016549,
+      "tier": "free",
+      "free_tokens_used": 7933,
+      "voucher_tokens_used": 0
+    },
+    {
+      "model": "qwen3.7-plus",
+      "role": "default",
+      "step": "remediation.plan",
+      "input_tokens": 1631,
+      "output_tokens": 1336,
+      "est_cost_usd": 0.002232,
+      "tier": "free",
+      "free_tokens_used": 2967,
+      "voucher_tokens_used": 0
+    }
+  ],
+  "oracle_decisions": []
+}

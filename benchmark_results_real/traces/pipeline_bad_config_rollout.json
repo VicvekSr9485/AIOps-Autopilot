@@ -1,0 +1,166 @@
+{
+  "report": {
+    "incident_id": "inc-6c0bbdae4970",
+    "resolved": false,
+    "triage": {
+      "incident_id": "inc-6c0bbdae4970",
+      "hypotheses": [
+        {
+          "incident_id": "inc-6c0bbdae4970",
+          "cause": "Invalid or unsupported feature mode ('turbo_v2') configured or passed in requests, causing application-level rejections.",
+          "confidence": 0.95,
+          "evidence": [
+            {
+              "kind": "log",
+              "pointer": "log:app",
+              "excerpt": "work_failed {\"reason\": \"invalid_feature_mode\", \"feature_mode\": \"turbo_v2\"}"
+            },
+            {
+              "kind": "log",
+              "pointer": "log:app",
+              "excerpt": "\"GET /work HTTP/1.1\" 500 Internal Server Error"
+            },
+            {
+              "kind": "metric",
+              "pointer": "metric:work_success_total",
+              "excerpt": "work_success_total: first=0 last=0 delta=+0"
+            }
+          ],
+          "reasoning_summary": "Logs explicitly indicate that work requests are failing with an 'invalid_feature_mode' error for 'turbo_v2'. This results in 500 status codes on the /work endpoint and zero successful jobs, while the queue depth remains at 0 because requests are rejected before processing."
+        },
+        {
+          "incident_id": "inc-6c0bbdae4970",
+          "cause": "Health probe degradation due to sustained work processing failures.",
+          "confidence": 0.8,
+          "evidence": [
+            {
+              "kind": "alert",
+              "pointer": "alert:sandbox.app.health_degraded",
+              "excerpt": "1/6 health checks failing, 6/6 work requests failing"
+            },
+            {
+              "kind": "alert",
+              "pointer": "alert:sandbox.app.work_errors",
+              "excerpt": "active alerts: ['sandbox.app.work_errors']"
+            }
+          ],
+          "reasoning_summary": "While initial health checks returned 200 OK, live re-checks show 2/2 probes failing and a new 'work_errors' alert. This implies the health probe logic includes a threshold for work errors or successful processing, which is now failing due to the invalid feature mode."
+        }
+      ],
+      "consulted_runbooks": [
+        "Queue consumer scaled to zero replicas (score=0.0809): Symptoms: worker_shutdown (SIGTERM) in the logs and then silence; queue_depth climbing while jobs_processed stays flat; health checks green because nothing user-facing is failing yet.\nRemediation: scale the consumer back to its baseline replica count. IMPORTANT: restarting the service is a NO-OP when zero replicas exist \u2014 there is no container to restart; an explicit scale-up is required. Treat th",
+        "Queue backlog growing while consumers sit idle (score=0.0771): Symptoms: queue_depth grows monotonically; jobs_processed counter stops advancing; user-facing requests and health checks stay green \u2014 a silent backlog with no error logs.\nDiagnosis: compare producer and consumer rates over a window; check the worker/consumer process state (paused, crashed, deadlocked); verify the queue itself accepts reads.\nRemediation: restart (or unpause) the worker service so ",
+        "Postgres connection slots exhausted / too many clients (score=0.0674): Symptoms: health checks report the database component down; application requests fail with 'remaining connection slots are reserved' or 'sorry, too many clients already'; errors appear without a deploy or config change.\nDiagnosis: inspect pg_stat_activity for idle or long-running sessions (state, query_start, usename); compare session count against max_connections; look for batch jobs or leaked po"
+      ],
+      "telemetry_summary": "ALERT: sandbox.app.health_degraded (severity=medium, source=sandbox-probe)\n  1/6 health checks failing, 6/6 work requests failing\nMETRICS (25 points, windowed):\n  errors_total: first=1 last=5 delta=+4 samples=5\n  jobs_processed: first=1 last=1 delta=+0 samples=5\n  queue_depth: first=0 last=0 delta=+0 samples=5\n  requests_total: first=1 last=5 delta=+4 samples=5\n  work_success_total: first=0 last=0 delta=+0 samples=5\nLOGS (38 lines -> 34 distinct, top 12 shown):\n  [app] x5: work_failed {\"reason\": \"invalid_feature_mode\", \"feature_mode\": \"turbo_v2\"}\n  [app] x1: INFO:     127.0.0.1:42642 - \"GET /healthz HTTP/1.1\" 200 OK\n  [app] x1: INFO:     192.168.65.1:21076 - \"GET /healthz HTTP/1.1\" 200 OK\n  [app] x1: INFO:     192.168.65.1:21076 - \"GET /metrics HTTP/1.1\" 200 OK\n  [app] x1: INFO:     192.168.65.1:21076 - \"GET /work HTTP/1.1\" 500 Internal Server Error\n  [app] x1: INFO:     192.168.65.1:32158 - \"GET /healthz HTTP/1.1\" 200 OK\n  [app] x1: INFO:     192.168.65.1:32158 - \"GET /metrics HTTP/1.1\" 200 OK\n  [app] x1: INFO:     192.168.65.1:32158 - \"GET /work HTTP/1.1\" 500 Internal Server Error\n  [app] x1: INFO:     192.168.65.1:32462 - \"GET /healthz HTTP/1.1\" 200 OK\n  [app] x1: INFO:     192.168.65.1:32462 - \"GET /metrics HTTP/1.1\" 200 OK\n  [app] x1: INFO:     192.168.65.1:32462 - \"GET /work HTTP/1.1\" 500 Internal Server Error\n  [app] x1: INFO:     192.168.65.1:41072 - \"GET /healthz HTTP/1.1\" 200 OK\n  ... 22 more distinct messages omitted",
+      "generated_at": "2026-06-12T19:17:33.836686Z"
+    },
+    "proposal": {
+      "id": "rem-643133ade900",
+      "incident_id": "inc-6c0bbdae4970",
+      "hypothesis_cause": "Invalid or unsupported feature mode ('turbo_v2') configured or passed in requests, causing application-level rejections.",
+      "steps": [
+        {
+          "order": 1,
+          "action": "apply_config",
+          "target": "app",
+          "command": "{\"feature_mode\": \"stable\"}",
+          "expected_effect": "App stops rejecting work requests with invalid_feature_mode error and begins processing them successfully."
+        }
+      ],
+      "rollback_plan": [
+        {
+          "order": 1,
+          "action": "rollback",
+          "target": "app",
+          "command": null,
+          "expected_effect": "App configuration restored to canonical state, reverting feature_mode to previous value."
+        }
+      ],
+      "risk_score": 0.6,
+      "blast_radius": "single_service",
+      "requires_approval": true
+    },
+    "gate": {
+      "approved": false,
+      "route": "human",
+      "proposal": {
+        "id": "rem-643133ade900",
+        "incident_id": "inc-6c0bbdae4970",
+        "hypothesis_cause": "Invalid or unsupported feature mode ('turbo_v2') configured or passed in requests, causing application-level rejections.",
+        "steps": [
+          {
+            "order": 1,
+            "action": "apply_config",
+            "target": "app",
+            "command": "{\"feature_mode\": \"stable\"}",
+            "expected_effect": "App stops rejecting work requests with invalid_feature_mode error and begins processing them successfully."
+          }
+        ],
+        "rollback_plan": [
+          {
+            "order": 1,
+            "action": "rollback",
+            "target": "app",
+            "command": null,
+            "expected_effect": "App configuration restored to canonical state, reverting feature_mode to previous value."
+          }
+        ],
+        "risk_score": 0.6,
+        "blast_radius": "single_service",
+        "requires_approval": true
+      },
+      "escalation_reasons": [
+        "destructive action always escalates (step 1: apply_config on 'app')",
+        "risk 0.60 > 0.40"
+      ],
+      "human_action": "reject",
+      "note": "ground-truth oracle: proposal does not fix fault bad_config_rollout"
+    },
+    "execution": null,
+    "verification": null,
+    "rolled_back": false,
+    "outcome_recorded": true,
+    "llm": {
+      "calls": 2,
+      "input_tokens": 2933,
+      "output_tokens": 3904,
+      "est_cost_usd": 0.013449,
+      "steps": [
+        "triage.root_cause",
+        "remediation.plan"
+      ]
+    },
+    "stage_seconds": {
+      "triage": 49.8002,
+      "remediation": 26.4362
+    }
+  },
+  "llm_records": [
+    {
+      "model": "qwen3.7-max",
+      "role": "reasoning",
+      "step": "triage.root_cause",
+      "input_tokens": 1461,
+      "output_tokens": 2492,
+      "est_cost_usd": 0.011171,
+      "tier": "free",
+      "free_tokens_used": 3953,
+      "voucher_tokens_used": 0
+    },
+    {
+      "model": "qwen3.7-plus",
+      "role": "default",
+      "step": "remediation.plan",
+      "input_tokens": 1472,
+      "output_tokens": 1412,
+      "est_cost_usd": 0.002278,
+      "tier": "free",
+      "free_tokens_used": 2884,
+      "voucher_tokens_used": 0
+    }
+  ],
+  "oracle_decisions": [
+    "reject"
+  ]
+}

@@ -1,0 +1,198 @@
+{
+  "report": {
+    "incident_id": "inc-40950c108544",
+    "resolved": false,
+    "triage": {
+      "incident_id": "inc-40950c108544",
+      "hypotheses": [
+        {
+          "incident_id": "inc-40950c108544",
+          "cause": "Postgres connection slots exhausted / too many clients",
+          "confidence": 0.95,
+          "evidence": [
+            {
+              "kind": "log",
+              "pointer": "log:app",
+              "excerpt": "healthz_component_failed {\"component\": \"db\", \"error\": \"connection failed: connection to server at \\\"172.25.0.3\\\", port 5432 failed: FATAL:  remaining connection slots are reserved for roles with the S"
+            },
+            {
+              "kind": "log",
+              "pointer": "log:app",
+              "excerpt": "work_failed {\"reason\": \"db_error\", \"error\": \"connection failed: connection to server at \\\"172.25.0.3\\\", port 5432 failed: FATAL:  remaining connection slots are reserved for roles with the SUPERUSER a"
+            },
+            {
+              "kind": "metric",
+              "pointer": "metric:errors_total",
+              "excerpt": "first=1 last=6 delta=+5 samples=6"
+            }
+          ],
+          "reasoning_summary": "The application logs explicitly show PostgreSQL rejecting connections with the 'remaining connection slots are reserved' FATAL error, which directly indicates that the database has reached its max_connections limit for non-superuser roles. This aligns perfectly with the failing health checks, failing work requests, and the specific runbook for Postgres connection slots exhausted."
+        },
+        {
+          "incident_id": "inc-40950c108544",
+          "cause": "Application database connection leak",
+          "confidence": 0.75,
+          "evidence": [
+            {
+              "kind": "log",
+              "pointer": "log:app",
+              "excerpt": "work_failed {\"reason\": \"db_error\", \"error\": \"connection failed: ... FATAL:  remaining connection slots are reserved for roles with the SUPERUSER a"
+            },
+            {
+              "kind": "metric",
+              "pointer": "metric:requests_total",
+              "excerpt": "first=2 last=7 delta=+5 samples=6"
+            }
+          ],
+          "reasoning_summary": "While the immediate trigger is connection slot exhaustion, the relatively low request volume (requests_total delta=+5) suggests that the exhaustion is likely due to a connection leak in the application (e.g., failing to close connections or return them to the pool) rather than a legitimate traffic spike overwhelming the database capacity."
+        }
+      ],
+      "consulted_runbooks": [
+        "Postgres connection slots exhausted / too many clients (score=0.1588): Symptoms: health checks report the database component down; application requests fail with 'remaining connection slots are reserved' or 'sorry, too many clients already'; errors appear without a deploy or config change.\nDiagnosis: inspect pg_stat_activity for idle or long-running sessions (state, query_start, usename); compare session count against max_connections; look for batch jobs or leaked po",
+        "Queue backlog growing while consumers sit idle (score=0.0948): Symptoms: queue_depth grows monotonically; jobs_processed counter stops advancing; user-facing requests and health checks stay green \u2014 a silent backlog with no error logs.\nDiagnosis: compare producer and consumer rates over a window; check the worker/consumer process state (paused, crashed, deadlocked); verify the queue itself accepts reads.\nRemediation: restart (or unpause) the worker service so ",
+        "Config rollout breaks requests AND wedges queue consumers (score=0.0766): Symptoms: work_failed errors naming an invalid setting (e.g. invalid_feature_mode) right after a rollout, while queue_depth sits above zero without draining and jobs_processed stops advancing.\nRemediation: roll the configuration back AND restart the consumer as well \u2014 a consumer that loaded the bad config stays wedged after the rollback, so the backlog will not drain on its own. Verify both the er"
+      ],
+      "telemetry_summary": "ALERT: sandbox.app.health_degraded (severity=high, source=sandbox-probe)\n  6/6 health checks failing, 6/6 work requests failing\nMETRICS (30 points, windowed):\n  errors_total: first=1 last=6 delta=+5 samples=6\n  jobs_processed: first=1 last=1 delta=+0 samples=6\n  queue_depth: first=0 last=0 delta=+0 samples=6\n  requests_total: first=2 last=7 delta=+5 samples=6\n  work_success_total: first=1 last=1 delta=+0 samples=6\nLOGS (61 lines -> 48 distinct, top 12 shown):\n  [app] x9: healthz_component_failed {\"component\": \"db\", \"error\": \"connection failed: connection to server at \\\"172.25.0.3\\\", port 5432 failed: FATAL:  remaining connection slots are reserved for roles with the S\n  [app] x6: work_failed {\"reason\": \"db_error\", \"error\": \"connection failed: connection to server at \\\"172.25.0.3\\\", port 5432 failed: FATAL:  remaining connection slots are reserved for roles with the SUPERUSER a\n  [app] x1: INFO:     127.0.0.1:36280 - \"GET /healthz HTTP/1.1\" 503 Service Unavailable\n  [app] x1: INFO:     127.0.0.1:36294 - \"GET /healthz HTTP/1.1\" 503 Service Unavailable\n  [app] x1: INFO:     127.0.0.1:45128 - \"GET /healthz HTTP/1.1\" 503 Service Unavailable\n  [app] x1: INFO:     192.168.65.1:19888 - \"GET /healthz HTTP/1.1\" 200 OK\n  [app] x1: INFO:     192.168.65.1:19888 - \"GET /metrics HTTP/1.1\" 200 OK\n  [app] x1: INFO:     192.168.65.1:19888 - \"GET /work HTTP/1.1\" 200 OK\n  [app] x1: INFO:     192.168.65.1:21548 - \"GET /healthz HTTP/1.1\" 503 Service Unavailable\n  [app] x1: INFO:     192.168.65.1:21548 - \"GET /metrics HTTP/1.1\" 200 OK\n  [app] x1: INFO:     192.168.65.1:21548 - \"GET /work HTTP/1.1\" 500 Internal Server Error\n  [app] x1: INFO:     192.168.65.1:35379 - \"GET /healthz HTTP/1.1\" 503 Service Unavailable\n  ... 36 more distinct messages omitted",
+      "generated_at": "2026-06-12T19:12:19.177373Z"
+    },
+    "proposal": {
+      "id": "rem-7d8b0e8547d4",
+      "incident_id": "inc-40950c108544",
+      "hypothesis_cause": "Postgres connection slots exhausted / too many clients",
+      "steps": [
+        {
+          "order": 1,
+          "action": "restart_service",
+          "target": "app",
+          "command": null,
+          "expected_effect": "Drops existing database connections held by the app service, freeing up Postgres connection slots and resolving the 'remaining connection slots are reserved' error."
+        }
+      ],
+      "rollback_plan": [
+        {
+          "order": 1,
+          "action": "restart_service",
+          "target": "app",
+          "command": null,
+          "expected_effect": "Restarts the app service again to ensure a clean connection state if the initial restart did not fully clear leaked pools."
+        }
+      ],
+      "risk_score": 0.2,
+      "blast_radius": "single_service",
+      "requires_approval": true
+    },
+    "gate": {
+      "approved": true,
+      "route": "auto",
+      "proposal": {
+        "id": "rem-7d8b0e8547d4",
+        "incident_id": "inc-40950c108544",
+        "hypothesis_cause": "Postgres connection slots exhausted / too many clients",
+        "steps": [
+          {
+            "order": 1,
+            "action": "restart_service",
+            "target": "app",
+            "command": null,
+            "expected_effect": "Drops existing database connections held by the app service, freeing up Postgres connection slots and resolving the 'remaining connection slots are reserved' error."
+          }
+        ],
+        "rollback_plan": [
+          {
+            "order": 1,
+            "action": "restart_service",
+            "target": "app",
+            "command": null,
+            "expected_effect": "Restarts the app service again to ensure a clean connection state if the initial restart did not fully clear leaked pools."
+          }
+        ],
+        "risk_score": 0.2,
+        "blast_radius": "single_service",
+        "requires_approval": false
+      },
+      "escalation_reasons": [],
+      "human_action": null,
+      "note": ""
+    },
+    "execution": {
+      "proposal_id": "rem-7d8b0e8547d4",
+      "incident_id": "inc-40950c108544",
+      "success": true,
+      "step_outcomes": [
+        {
+          "step_order": 1,
+          "success": true,
+          "output": "restarted sandbox service 'app'"
+        }
+      ],
+      "started_at": "2026-06-12T19:12:49.686636Z",
+      "finished_at": "2026-06-12T19:12:50.230766Z",
+      "error": null
+    },
+    "verification": {
+      "incident_id": "inc-40950c108544",
+      "resolved": false,
+      "checks": [
+        {
+          "name": "all_probes_healthy",
+          "passed": false,
+          "detail": "3/3 probes failing"
+        },
+        {
+          "name": "no_active_alerts",
+          "passed": false,
+          "detail": "sandbox.app.health_degraded"
+        },
+        {
+          "name": "backlog_draining",
+          "passed": true,
+          "detail": "queue_depth 0->0, jobs_processed delta +0"
+        }
+      ],
+      "verified_at": "2026-06-12T19:13:35.332856Z"
+    },
+    "rolled_back": true,
+    "outcome_recorded": true,
+    "llm": {
+      "calls": 2,
+      "input_tokens": 3268,
+      "output_tokens": 3443,
+      "est_cost_usd": 0.011469,
+      "steps": [
+        "triage.root_cause",
+        "remediation.plan"
+      ]
+    },
+    "stage_seconds": {
+      "triage": 36.0434,
+      "remediation": 30.5082,
+      "execution": 0.5443,
+      "verification": 45.2164
+    }
+  },
+  "llm_records": [
+    {
+      "model": "qwen3.7-max",
+      "role": "reasoning",
+      "step": "triage.root_cause",
+      "input_tokens": 1672,
+      "output_tokens": 1806,
+      "est_cost_usd": 0.008863,
+      "tier": "free",
+      "free_tokens_used": 3478,
+      "voucher_tokens_used": 0
+    },
+    {
+      "model": "qwen3.7-plus",
+      "role": "default",
+      "step": "remediation.plan",
+      "input_tokens": 1596,
+      "output_tokens": 1637,
+      "est_cost_usd": 0.002606,
+      "tier": "free",
+      "free_tokens_used": 3233,
+      "voucher_tokens_used": 0
+    }
+  ],
+  "oracle_decisions": []
+}

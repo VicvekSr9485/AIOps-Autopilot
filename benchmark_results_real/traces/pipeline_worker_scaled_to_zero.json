@@ -1,0 +1,216 @@
+{
+  "report": {
+    "incident_id": "inc-1806074cace3",
+    "resolved": false,
+    "triage": {
+      "incident_id": "inc-1806074cace3",
+      "hypotheses": [
+        {
+          "incident_id": "inc-1806074cace3",
+          "cause": "Queue backlog growing while consumers sit idle",
+          "confidence": 0.85,
+          "evidence": [
+            {
+              "kind": "metric",
+              "pointer": "metric:queue_depth",
+              "excerpt": "first=1 last=6 delta=+5 samples=6; live: first=7 last=9 delta=+2"
+            },
+            {
+              "kind": "metric",
+              "pointer": "metric:jobs_processed",
+              "excerpt": "first=1 last=1 delta=+0 samples=6; live: first=1 last=1 delta=+0"
+            },
+            {
+              "kind": "log",
+              "pointer": "log:app",
+              "excerpt": "GET /healthz HTTP/1.1 200 OK"
+            }
+          ],
+          "reasoning_summary": "The queue_depth metric is growing monotonically while the jobs_processed counter remains completely flat, indicating the consumer is not processing jobs. Meanwhile, user-facing requests and health checks remain green with no errors, perfectly matching the silent backlog symptoms of an idle or deadlocked consumer."
+        },
+        {
+          "incident_id": "inc-1806074cace3",
+          "cause": "Queue consumer scaled to zero replicas",
+          "confidence": 0.35,
+          "evidence": [
+            {
+              "kind": "metric",
+              "pointer": "metric:queue_depth",
+              "excerpt": "first=1 last=6 delta=+5"
+            },
+            {
+              "kind": "metric",
+              "pointer": "metric:jobs_processed",
+              "excerpt": "first=1 last=1 delta=+0"
+            }
+          ],
+          "reasoning_summary": "A scaled-to-zero consumer would also result in a growing queue and flat jobs_processed metric. However, there are no worker_shutdown or SIGTERM logs present in the telemetry to confirm a scale-down event, making this less likely than a general idle/deadlocked state."
+        },
+        {
+          "incident_id": "inc-1806074cace3",
+          "cause": "Transient anomaly or false positive alert",
+          "confidence": 0.2,
+          "evidence": [
+            {
+              "kind": "alert",
+              "pointer": "alert:sandbox.app.anomaly_suspected",
+              "excerpt": "severity=low, source=sandbox-probe"
+            },
+            {
+              "kind": "log",
+              "pointer": "log:live_recheck",
+              "excerpt": "0/2 probes failing now; active alerts: none"
+            }
+          ],
+          "reasoning_summary": "The initial alert was low severity and the live re-check shows no active alerts and passing probes. However, the live metrics still show a growing queue backlog, suggesting the underlying consumer issue persists even if the probe's anomaly detection cleared."
+        }
+      ],
+      "consulted_runbooks": [
+        "Queue backlog growing while consumers sit idle (score=0.0977): Symptoms: queue_depth grows monotonically; jobs_processed counter stops advancing; user-facing requests and health checks stay green \u2014 a silent backlog with no error logs.\nDiagnosis: compare producer and consumer rates over a window; check the worker/consumer process state (paused, crashed, deadlocked); verify the queue itself accepts reads.\nRemediation: restart (or unpause) the worker service so ",
+        "Queue consumer scaled to zero replicas (score=0.0896): Symptoms: worker_shutdown (SIGTERM) in the logs and then silence; queue_depth climbing while jobs_processed stays flat; health checks green because nothing user-facing is failing yet.\nRemediation: scale the consumer back to its baseline replica count. IMPORTANT: restarting the service is a NO-OP when zero replicas exist \u2014 there is no container to restart; an explicit scale-up is required. Treat th",
+        "Config rollout breaks requests AND wedges queue consumers (score=0.0766): Symptoms: work_failed errors naming an invalid setting (e.g. invalid_feature_mode) right after a rollout, while queue_depth sits above zero without draining and jobs_processed stops advancing.\nRemediation: roll the configuration back AND restart the consumer as well \u2014 a consumer that loaded the bad config stays wedged after the rollback, so the backlog will not drain on its own. Verify both the er"
+      ],
+      "telemetry_summary": "ALERT: sandbox.app.anomaly_suspected (severity=low, source=sandbox-probe)\n  0/6 health checks failing, 0/6 work requests failing\nMETRICS (30 points, windowed):\n  errors_total: first=0 last=0 delta=+0 samples=6\n  jobs_processed: first=1 last=1 delta=+0 samples=6\n  queue_depth: first=1 last=6 delta=+5 samples=6\n  requests_total: first=2 last=7 delta=+5 samples=6\n  work_success_total: first=2 last=7 delta=+5 samples=6\nLOGS (41 lines -> 41 distinct, top 12 shown):\n  [app] x1: INFO:     127.0.0.1:34884 - \"GET /healthz HTTP/1.1\" 200 OK\n  [app] x1: INFO:     127.0.0.1:35400 - \"GET /healthz HTTP/1.1\" 200 OK\n  [app] x1: INFO:     127.0.0.1:35412 - \"GET /healthz HTTP/1.1\" 200 OK\n  [app] x1: INFO:     192.168.65.1:20829 - \"GET /healthz HTTP/1.1\" 200 OK\n  [app] x1: INFO:     192.168.65.1:20829 - \"GET /metrics HTTP/1.1\" 200 OK\n  [app] x1: INFO:     192.168.65.1:20829 - \"GET /work HTTP/1.1\" 200 OK\n  [app] x1: INFO:     192.168.65.1:23318 - \"GET /healthz HTTP/1.1\" 200 OK\n  [app] x1: INFO:     192.168.65.1:23318 - \"GET /metrics HTTP/1.1\" 200 OK\n  [app] x1: INFO:     192.168.65.1:23318 - \"GET /work HTTP/1.1\" 200 OK\n  [app] x1: INFO:     192.168.65.1:32769 - \"GET /healthz HTTP/1.1\" 200 OK\n  [app] x1: INFO:     192.168.65.1:32769 - \"GET /metrics HTTP/1.1\" 200 OK\n  [app] x1: INFO:     192.168.65.1:32769 - \"GET /work HTTP/1.1\" 200 OK\n  ... 29 more distinct messages omitted",
+      "generated_at": "2026-06-12T19:46:13.699294Z"
+    },
+    "proposal": {
+      "id": "rem-28f03d7a8281",
+      "incident_id": "inc-1806074cace3",
+      "hypothesis_cause": "Queue backlog growing while consumers sit idle",
+      "steps": [
+        {
+          "order": 1,
+          "action": "restart_service",
+          "target": "worker",
+          "command": null,
+          "expected_effect": "Resets the worker process, clearing any transient deadlock or paused state, enabling it to resume consuming jobs from the queue."
+        }
+      ],
+      "rollback_plan": [
+        {
+          "order": 1,
+          "action": "scale_service",
+          "target": "worker",
+          "command": "{\"replicas\": 0}",
+          "expected_effect": "Halts the worker service if the restart induces a crash loop or worsens the state, preventing resource exhaustion while further diagnostics are performed."
+        }
+      ],
+      "risk_score": 0.15,
+      "blast_radius": "single_service",
+      "requires_approval": true
+    },
+    "gate": {
+      "approved": true,
+      "route": "auto",
+      "proposal": {
+        "id": "rem-28f03d7a8281",
+        "incident_id": "inc-1806074cace3",
+        "hypothesis_cause": "Queue backlog growing while consumers sit idle",
+        "steps": [
+          {
+            "order": 1,
+            "action": "restart_service",
+            "target": "worker",
+            "command": null,
+            "expected_effect": "Resets the worker process, clearing any transient deadlock or paused state, enabling it to resume consuming jobs from the queue."
+          }
+        ],
+        "rollback_plan": [
+          {
+            "order": 1,
+            "action": "scale_service",
+            "target": "worker",
+            "command": "{\"replicas\": 0}",
+            "expected_effect": "Halts the worker service if the restart induces a crash loop or worsens the state, preventing resource exhaustion while further diagnostics are performed."
+          }
+        ],
+        "risk_score": 0.15,
+        "blast_radius": "single_service",
+        "requires_approval": false
+      },
+      "escalation_reasons": [],
+      "human_action": null,
+      "note": ""
+    },
+    "execution": {
+      "proposal_id": "rem-28f03d7a8281",
+      "incident_id": "inc-1806074cace3",
+      "success": true,
+      "step_outcomes": [
+        {
+          "step_order": 1,
+          "success": true,
+          "output": "restarted sandbox service 'worker'"
+        }
+      ],
+      "started_at": "2026-06-12T19:46:50.913967Z",
+      "finished_at": "2026-06-12T19:46:51.022604Z",
+      "error": null
+    },
+    "verification": {
+      "incident_id": "inc-1806074cace3",
+      "resolved": false,
+      "checks": [
+        {
+          "name": "all_probes_healthy",
+          "passed": true,
+          "detail": "0/3 probes failing"
+        },
+        {
+          "name": "no_active_alerts",
+          "passed": true,
+          "detail": "none firing"
+        },
+        {
+          "name": "backlog_draining",
+          "passed": false,
+          "detail": "queue_depth 117->119, jobs_processed delta +0"
+        }
+      ],
+      "verified_at": "2026-06-12T19:47:36.411278Z"
+    },
+    "rolled_back": true,
+    "outcome_recorded": true,
+    "llm": {
+      "calls": 2,
+      "input_tokens": 3064,
+      "output_tokens": 5033,
+      "est_cost_usd": 0.017257,
+      "steps": [
+        "triage.root_cause",
+        "remediation.plan"
+      ]
+    },
+    "stage_seconds": {
+      "triage": 69.8401,
+      "remediation": 37.2135,
+      "execution": 0.1088,
+      "verification": 45.3882
+    }
+  },
+  "llm_records": [
+    {
+      "model": "qwen3.7-max",
+      "role": "reasoning",
+      "step": "triage.root_cause",
+      "input_tokens": 1582,
+      "output_tokens": 3386,
+      "est_cost_usd": 0.014675,
+      "tier": "free",
+      "free_tokens_used": 4968,
+      "voucher_tokens_used": 0
+    },
+    {
+      "model": "qwen3.7-plus",
+      "role": "default",
+      "step": "remediation.plan",
+      "input_tokens": 1482,
+      "output_tokens": 1647,
+      "est_cost_usd": 0.002582,
+      "tier": "free",
+      "free_tokens_used": 3129,
+      "voucher_tokens_used": 0
+    }
+  ],
+  "oracle_decisions": []
+}

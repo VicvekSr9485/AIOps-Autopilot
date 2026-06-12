@@ -1,0 +1,176 @@
+{
+  "report": {
+    "incident_id": "inc-528d6de31962",
+    "resolved": false,
+    "triage": {
+      "incident_id": "inc-528d6de31962",
+      "hypotheses": [
+        {
+          "incident_id": "inc-528d6de31962",
+          "cause": "Queue backlog growing while consumers sit idle",
+          "confidence": 0.85,
+          "evidence": [
+            {
+              "kind": "metric",
+              "pointer": "metric:queue_depth",
+              "excerpt": "first=0 last=5 delta=+5 samples=6 (live: first=6 last=8 delta=+2)"
+            },
+            {
+              "kind": "metric",
+              "pointer": "metric:jobs_processed",
+              "excerpt": "first=1 last=1 delta=+0 samples=6"
+            },
+            {
+              "kind": "metric",
+              "pointer": "metric:errors_total",
+              "excerpt": "first=0 last=0 delta=+0 samples=6"
+            },
+            {
+              "kind": "log",
+              "pointer": "log:app",
+              "excerpt": "INFO: 192.168.65.1:16123 - \"GET /work HTTP/1.1\" 200 OK"
+            }
+          ],
+          "reasoning_summary": "The queue_depth metric is growing monotonically while jobs_processed remains completely flat, indicating that enqueued work is not being consumed. Meanwhile, errors_total is zero and API endpoints like /work and /healthz are returning 200 OK, matching the runbook symptoms for a silent backlog where consumers are idle, paused, or deadlocked without throwing user-facing errors."
+        },
+        {
+          "incident_id": "inc-528d6de31962",
+          "cause": "Queue consumer scaled to zero replicas",
+          "confidence": 0.65,
+          "evidence": [
+            {
+              "kind": "metric",
+              "pointer": "metric:queue_depth",
+              "excerpt": "first=0 last=5 delta=+5 samples=6"
+            },
+            {
+              "kind": "metric",
+              "pointer": "metric:jobs_processed",
+              "excerpt": "first=1 last=1 delta=+0 samples=6"
+            },
+            {
+              "kind": "log",
+              "pointer": "log:app",
+              "excerpt": "INFO: 127.0.0.1:57362 - \"GET /healthz HTTP/1.1\" 200 OK"
+            }
+          ],
+          "reasoning_summary": "A scaled-to-zero consumer perfectly explains the silent backlog (growing queue_depth, flat jobs_processed) and the complete absence of worker-side logs or SIGTERM shutdown messages in the log stream. Health checks remain green because the API frontend is still running and accepting requests, simply enqueuing them to an unconsumed queue."
+        }
+      ],
+      "consulted_runbooks": [
+        "Queue consumer scaled to zero replicas (score=0.0994): Symptoms: worker_shutdown (SIGTERM) in the logs and then silence; queue_depth climbing while jobs_processed stays flat; health checks green because nothing user-facing is failing yet.\nRemediation: scale the consumer back to its baseline replica count. IMPORTANT: restarting the service is a NO-OP when zero replicas exist \u2014 there is no container to restart; an explicit scale-up is required. Treat th",
+        "Queue backlog growing while consumers sit idle (score=0.0955): Symptoms: queue_depth grows monotonically; jobs_processed counter stops advancing; user-facing requests and health checks stay green \u2014 a silent backlog with no error logs.\nDiagnosis: compare producer and consumer rates over a window; check the worker/consumer process state (paused, crashed, deadlocked); verify the queue itself accepts reads.\nRemediation: restart (or unpause) the worker service so ",
+        "Postgres connection slots exhausted / too many clients (score=0.056): Symptoms: health checks report the database component down; application requests fail with 'remaining connection slots are reserved' or 'sorry, too many clients already'; errors appear without a deploy or config change.\nDiagnosis: inspect pg_stat_activity for idle or long-running sessions (state, query_start, usename); compare session count against max_connections; look for batch jobs or leaked po"
+      ],
+      "telemetry_summary": "ALERT: sandbox.app.anomaly_suspected (severity=low, source=sandbox-probe)\n  0/6 health checks failing, 0/6 work requests failing\nMETRICS (30 points, windowed):\n  errors_total: first=0 last=0 delta=+0 samples=6\n  jobs_processed: first=1 last=1 delta=+0 samples=6\n  queue_depth: first=0 last=5 delta=+5 samples=6\n  requests_total: first=2 last=7 delta=+5 samples=6\n  work_success_total: first=2 last=7 delta=+5 samples=6\nLOGS (42 lines -> 42 distinct, top 12 shown):\n  [app] x1: INFO:     127.0.0.1:57362 - \"GET /healthz HTTP/1.1\" 200 OK\n  [app] x1: INFO:     127.0.0.1:57372 - \"GET /healthz HTTP/1.1\" 200 OK\n  [app] x1: INFO:     127.0.0.1:57380 - \"GET /healthz HTTP/1.1\" 200 OK\n  [app] x1: INFO:     192.168.65.1:16123 - \"GET /healthz HTTP/1.1\" 200 OK\n  [app] x1: INFO:     192.168.65.1:16123 - \"GET /metrics HTTP/1.1\" 200 OK\n  [app] x1: INFO:     192.168.65.1:16123 - \"GET /work HTTP/1.1\" 200 OK\n  [app] x1: INFO:     192.168.65.1:31229 - \"GET /healthz HTTP/1.1\" 200 OK\n  [app] x1: INFO:     192.168.65.1:31229 - \"GET /metrics HTTP/1.1\" 200 OK\n  [app] x1: INFO:     192.168.65.1:31229 - \"GET /work HTTP/1.1\" 200 OK\n  [app] x1: INFO:     192.168.65.1:43813 - \"GET /healthz HTTP/1.1\" 200 OK\n  [app] x1: INFO:     192.168.65.1:43813 - \"GET /metrics HTTP/1.1\" 200 OK\n  [app] x1: INFO:     192.168.65.1:43813 - \"GET /work HTTP/1.1\" 200 OK\n  ... 30 more distinct messages omitted",
+      "generated_at": "2026-06-12T19:25:55.598038Z"
+    },
+    "proposal": {
+      "id": "rem-a681171d38ae",
+      "incident_id": "inc-528d6de31962",
+      "hypothesis_cause": "Queue backlog growing while consumers sit idle",
+      "steps": [
+        {
+          "order": 1,
+          "action": "scale_service",
+          "target": "worker",
+          "command": "{\"replicas\": 1}",
+          "expected_effect": "Worker service is scaled up to 1 replica, enabling it to consume the queued messages and reduce the queue_depth."
+        }
+      ],
+      "rollback_plan": [
+        {
+          "order": 1,
+          "action": "scale_service",
+          "target": "worker",
+          "command": "{\"replicas\": 0}",
+          "expected_effect": "Worker service is scaled back down to 0 replicas, restoring the pre-remediation state."
+        }
+      ],
+      "risk_score": 0.6,
+      "blast_radius": "single_service",
+      "requires_approval": true
+    },
+    "gate": {
+      "approved": false,
+      "route": "human",
+      "proposal": {
+        "id": "rem-a681171d38ae",
+        "incident_id": "inc-528d6de31962",
+        "hypothesis_cause": "Queue backlog growing while consumers sit idle",
+        "steps": [
+          {
+            "order": 1,
+            "action": "scale_service",
+            "target": "worker",
+            "command": "{\"replicas\": 1}",
+            "expected_effect": "Worker service is scaled up to 1 replica, enabling it to consume the queued messages and reduce the queue_depth."
+          }
+        ],
+        "rollback_plan": [
+          {
+            "order": 1,
+            "action": "scale_service",
+            "target": "worker",
+            "command": "{\"replicas\": 0}",
+            "expected_effect": "Worker service is scaled back down to 0 replicas, restoring the pre-remediation state."
+          }
+        ],
+        "risk_score": 0.6,
+        "blast_radius": "single_service",
+        "requires_approval": true
+      },
+      "escalation_reasons": [
+        "destructive action always escalates (step 1: scale_service on 'worker')",
+        "risk 0.60 > 0.40"
+      ],
+      "human_action": "reject",
+      "note": "ground-truth oracle: proposal does not fix fault queue_consumer_stall"
+    },
+    "execution": null,
+    "verification": null,
+    "rolled_back": false,
+    "outcome_recorded": true,
+    "llm": {
+      "calls": 2,
+      "input_tokens": 3107,
+      "output_tokens": 3041,
+      "est_cost_usd": 0.010627,
+      "steps": [
+        "triage.root_cause",
+        "remediation.plan"
+      ]
+    },
+    "stage_seconds": {
+      "triage": 37.5709,
+      "remediation": 24.4728
+    }
+  },
+  "llm_records": [
+    {
+      "model": "qwen3.7-max",
+      "role": "reasoning",
+      "step": "triage.root_cause",
+      "input_tokens": 1578,
+      "output_tokens": 1730,
+      "est_cost_usd": 0.00846,
+      "tier": "free",
+      "free_tokens_used": 3308,
+      "voucher_tokens_used": 0
+    },
+    {
+      "model": "qwen3.7-plus",
+      "role": "default",
+      "step": "remediation.plan",
+      "input_tokens": 1529,
+      "output_tokens": 1311,
+      "est_cost_usd": 0.002167,
+      "tier": "free",
+      "free_tokens_used": 2840,
+      "voucher_tokens_used": 0
+    }
+  ],
+  "oracle_decisions": [
+    "reject"
+  ]
+}

@@ -1,0 +1,37 @@
+{
+  "baseline": {
+    "incident_id": "inc-7116764c9ebc",
+    "root_cause": "Worker service is stuck or unresponsive, causing jobs to accumulate in the queue without being processed.",
+    "confidence": 0.9,
+    "steps": [
+      {
+        "order": 1,
+        "action": "restart_service",
+        "target": "worker",
+        "command": null,
+        "expected_effect": ""
+      }
+    ],
+    "schema_failed": false,
+    "error": null
+  },
+  "application": {
+    "applied": true,
+    "success": true,
+    "invalid_tool_calls": 0,
+    "detail": "all steps applied"
+  },
+  "llm_records": [
+    {
+      "model": "qwen3.7-max",
+      "role": "reasoning",
+      "step": "baseline.single_prompt",
+      "input_tokens": 928,
+      "output_tokens": 607,
+      "est_cost_usd": 0.003436,
+      "tier": "free",
+      "free_tokens_used": 1535,
+      "voucher_tokens_used": 0
+    }
+  ]
+}

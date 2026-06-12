@@ -50,15 +50,20 @@ class LLMConfig(BaseModel):
     )
     mock_mode: bool = False
     fixtures_dir: str | None = None
+    # Hard per-run kill switch: once the session meter reaches this many total
+    # tokens, the next complete() refuses BEFORE calling the model. None = off.
+    run_token_cap: int | None = None
 
 
 def load_llm_config() -> LLMConfig:
     """Build config from environment (.env is loaded by the app entrypoint, not here)."""
     free_default = int(os.environ.get("AUTOPILOT_FREE_TIER_TOKENS", DEFAULT_FREE_TIER_TOKENS))
+    cap_raw = os.environ.get("AUTOPILOT_RUN_TOKEN_CAP", "")
     return LLMConfig(
         base_url=os.environ.get("DASHSCOPE_BASE_URL", DASHSCOPE_BASE_URL_DEFAULT),
         api_key=os.environ.get("DASHSCOPE_API_KEY", ""),
         free_tier_tokens={m: free_default for m in PRICING},
         mock_mode=os.environ.get("AUTOPILOT_MOCK_LLM", "0") == "1",
         fixtures_dir=os.environ.get("AUTOPILOT_FIXTURES_DIR"),
+        run_token_cap=int(cap_raw) if cap_raw else None,
     )

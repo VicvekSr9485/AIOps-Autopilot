@@ -1,0 +1,180 @@
+{
+  "report": {
+    "incident_id": "inc-7c7d0e1c9101",
+    "resolved": false,
+    "triage": {
+      "incident_id": "inc-7c7d0e1c9101",
+      "hypotheses": [
+        {
+          "incident_id": "inc-7c7d0e1c9101",
+          "cause": "Postgres connection slots exhausted / too many clients",
+          "confidence": 0.99,
+          "evidence": [
+            {
+              "kind": "log",
+              "pointer": "log:app",
+              "excerpt": "healthz_component_failed {\"component\": \"db\", \"error\": \"connection failed: connection to server at \\\"172.25.0.4\\\", port 5432 failed: FATAL:  remaining connection slots are reserved for roles with the SUPERUSER attribute\"}"
+            },
+            {
+              "kind": "log",
+              "pointer": "log:db",
+              "excerpt": "FATAL:  remaining connection slots are reserved for roles with the SUPERUSER attribute"
+            },
+            {
+              "kind": "metric",
+              "pointer": "metric:errors_total",
+              "excerpt": "errors_total increases from 1 to 9 while work_success_total remains flat at 1"
+            }
+          ],
+          "reasoning_summary": "Application and database logs explicitly show PostgreSQL rejecting new connections due to exhausted connection slots (reserved for SUPERUSER). This directly causes the app's health checks and work requests to fail with 500/503 errors, perfectly aligning with the connection slots exhausted runbook."
+        }
+      ],
+      "consulted_runbooks": [
+        "Postgres connection slots exhausted / too many clients (score=0.1429): Symptoms: health checks report the database component down; application requests fail with 'remaining connection slots are reserved' or 'sorry, too many clients already'; errors appear without a deploy or config change.\nDiagnosis: inspect pg_stat_activity for idle or long-running sessions (state, query_start, usename); compare session count against max_connections; look for batch jobs or leaked po",
+        "Queue backlog growing while consumers sit idle (score=0.0939): Symptoms: queue_depth grows monotonically; jobs_processed counter stops advancing; user-facing requests and health checks stay green \u2014 a silent backlog with no error logs.\nDiagnosis: compare producer and consumer rates over a window; check the worker/consumer process state (paused, crashed, deadlocked); verify the queue itself accepts reads.\nRemediation: restart (or unpause) the worker service so ",
+        "Queue consumer scaled to zero replicas (score=0.0733): Symptoms: worker_shutdown (SIGTERM) in the logs and then silence; queue_depth climbing while jobs_processed stays flat; health checks green because nothing user-facing is failing yet.\nRemediation: scale the consumer back to its baseline replica count. IMPORTANT: restarting the service is a NO-OP when zero replicas exist \u2014 there is no container to restart; an explicit scale-up is required. Treat th"
+      ],
+      "telemetry_summary": "ALERT: sandbox.app.health_degraded (severity=high, source=sandbox-probe)\n  6/6 health checks failing, 6/6 work requests failing\nMETRICS (30 points, windowed):\n  errors_total: first=1 last=6 delta=+5 samples=6\n  jobs_processed: first=1 last=1 delta=+0 samples=6\n  queue_depth: first=0 last=0 delta=+0 samples=6\n  requests_total: first=2 last=7 delta=+5 samples=6\n  work_success_total: first=1 last=1 delta=+0 samples=6\nLOGS (61 lines -> 48 distinct, top 12 shown):\n  [app] x9: healthz_component_failed {\"component\": \"db\", \"error\": \"connection failed: connection to server at \\\"172.25.0.4\\\", port 5432 failed: FATAL:  remaining connection slots are reserved for roles with the S\n  [app] x6: work_failed {\"reason\": \"db_error\", \"error\": \"connection failed: connection to server at \\\"172.25.0.4\\\", port 5432 failed: FATAL:  remaining connection slots are reserved for roles with the SUPERUSER a\n  [app] x1: INFO:     127.0.0.1:35526 - \"GET /healthz HTTP/1.1\" 503 Service Unavailable\n  [app] x1: INFO:     127.0.0.1:35542 - \"GET /healthz HTTP/1.1\" 503 Service Unavailable\n  [app] x1: INFO:     127.0.0.1:35544 - \"GET /healthz HTTP/1.1\" 503 Service Unavailable\n  [app] x1: INFO:     192.168.65.1:23666 - \"GET /healthz HTTP/1.1\" 503 Service Unavailable\n  [app] x1: INFO:     192.168.65.1:23666 - \"GET /metrics HTTP/1.1\" 200 OK\n  [app] x1: INFO:     192.168.65.1:23666 - \"GET /work HTTP/1.1\" 500 Internal Server Error\n  [app] x1: INFO:     192.168.65.1:25691 - \"GET /healthz HTTP/1.1\" 200 OK\n  [app] x1: INFO:     192.168.65.1:25691 - \"GET /metrics HTTP/1.1\" 200 OK\n  [app] x1: INFO:     192.168.65.1:25691 - \"GET /work HTTP/1.1\" 200 OK\n  [app] x1: INFO:     192.168.65.1:30947 - \"GET /healthz HTTP/1.1\" 503 Service Unavailable\n  ... 36 more distinct messages omitted",
+      "generated_at": "2026-06-12T19:15:04.639506Z"
+    },
+    "proposal": {
+      "id": "rem-43a8d692fc7e",
+      "incident_id": "inc-7c7d0e1c9101",
+      "hypothesis_cause": "Postgres connection slots exhausted / too many clients",
+      "steps": [
+        {
+          "order": 1,
+          "action": "restart_service",
+          "target": "app",
+          "command": null,
+          "expected_effect": "Terminates existing app processes and drops their held database connections, freeing up Postgres connection slots and allowing new health checks and work requests to succeed."
+        }
+      ],
+      "rollback_plan": [
+        {
+          "order": 1,
+          "action": "restart_service",
+          "target": "app",
+          "command": null,
+          "expected_effect": "Re-restarts the app service to ensure a clean state if the initial restart did not fully clear the connection pool or if the service entered a degraded state post-restart."
+        }
+      ],
+      "risk_score": 0.2,
+      "blast_radius": "single_service",
+      "requires_approval": true
+    },
+    "gate": {
+      "approved": true,
+      "route": "auto",
+      "proposal": {
+        "id": "rem-43a8d692fc7e",
+        "incident_id": "inc-7c7d0e1c9101",
+        "hypothesis_cause": "Postgres connection slots exhausted / too many clients",
+        "steps": [
+          {
+            "order": 1,
+            "action": "restart_service",
+            "target": "app",
+            "command": null,
+            "expected_effect": "Terminates existing app processes and drops their held database connections, freeing up Postgres connection slots and allowing new health checks and work requests to succeed."
+          }
+        ],
+        "rollback_plan": [
+          {
+            "order": 1,
+            "action": "restart_service",
+            "target": "app",
+            "command": null,
+            "expected_effect": "Re-restarts the app service to ensure a clean state if the initial restart did not fully clear the connection pool or if the service entered a degraded state post-restart."
+          }
+        ],
+        "risk_score": 0.2,
+        "blast_radius": "single_service",
+        "requires_approval": false
+      },
+      "escalation_reasons": [],
+      "human_action": null,
+      "note": ""
+    },
+    "execution": {
+      "proposal_id": "rem-43a8d692fc7e",
+      "incident_id": "inc-7c7d0e1c9101",
+      "success": true,
+      "step_outcomes": [
+        {
+          "step_order": 1,
+          "success": true,
+          "output": "restarted sandbox service 'app'"
+        }
+      ],
+      "started_at": "2026-06-12T19:15:38.124403Z",
+      "finished_at": "2026-06-12T19:15:38.663158Z",
+      "error": null
+    },
+    "verification": {
+      "incident_id": "inc-7c7d0e1c9101",
+      "resolved": false,
+      "checks": [
+        {
+          "name": "all_probes_healthy",
+          "passed": false,
+          "detail": "3/3 probes failing"
+        },
+        {
+          "name": "no_active_alerts",
+          "passed": false,
+          "detail": "sandbox.app.health_degraded"
+        },
+        {
+          "name": "backlog_draining",
+          "passed": true,
+          "detail": "queue_depth 0->0, jobs_processed delta +0"
+        }
+      ],
+      "verified_at": "2026-06-12T19:16:24.159890Z"
+    },
+    "rolled_back": true,
+    "outcome_recorded": true,
+    "llm": {
+      "calls": 2,
+      "input_tokens": 9838,
+      "output_tokens": 3140,
+      "est_cost_usd": 0.01823,
+      "steps": [
+        "triage.root_cause",
+        "remediation.plan"
+      ]
+    },
+    "stage_seconds": {
+      "triage": 27.9966,
+      "remediation": 33.4838,
+      "execution": 0.539,
+      "verification": 45.4964
+    }
+  },
+  "llm_records": [
+    {
+      "model": "qwen3.7-max",
+      "role": "reasoning",
+      "step": "triage.root_cause",
+      "input_tokens": 8286,
+      "output_tokens": 1359,
+      "est_cost_usd": 0.015454,
+      "tier": "free",
+      "free_tokens_used": 9645,
+      "voucher_tokens_used": 0
+    },
+    {
+      "model": "qwen3.7-plus",
+      "role": "default",
+      "step": "remediation.plan",
+      "input_tokens": 1552,
+      "output_tokens": 1781,
+      "est_cost_usd": 0.002776,
+      "tier": "free",
+      "free_tokens_used": 3333,
+      "voucher_tokens_used": 0
+    }
+  ],
+  "oracle_decisions": []
+}

@@ -138,6 +138,38 @@ async def test_verifier_catches_silent_backlog():
     assert result.resolved
 
 
+async def test_verifier_settle_waits_for_convergence():
+    """A correct remediation needs a moment to take effect on a real stack
+    (container restart, backlog drain). With a settle window the verifier
+    re-polls until the checks pass — without one, the same recovery is
+    mis-scored as failure (this sank every restart-based fix in the first
+    real-run attempt). The final state is what gets recorded either way."""
+    from autopilot.pipeline.verify import verify
+
+    def converging_snaps():
+        log_text, faulty = scenario_capture("db_pool_exhaustion")
+        return list(faulty[:8]) + [healthy_snap()]  # unhealthy, then recovers
+
+    servers = {"telemetry": build_telemetry_server(
+        FakeController(snapshots=converging_snaps()))}
+    result = await verify("inc-settle", servers, interval_s=0.0,
+                          settle_timeout_s=5.0, settle_poll_s=0.0)
+    assert result.resolved  # converged within the window
+
+    servers = {"telemetry": build_telemetry_server(
+        FakeController(snapshots=converging_snaps()))}
+    result = await verify("inc-nosettle", servers, interval_s=0.0)
+    assert not result.resolved  # default: one immediate measurement
+
+    # a genuinely-unfixed fault still fails after the window expires
+    log_text, faulty = scenario_capture("db_pool_exhaustion")
+    servers = {"telemetry": build_telemetry_server(
+        FakeController(snapshots=list(faulty)))}
+    result = await verify("inc-broken", servers, interval_s=0.0,
+                          settle_timeout_s=0.2, settle_poll_s=0.0)
+    assert not result.resolved
+
+
 async def test_planner_receives_triage_evidence_handoff():
     """Planner-handoff contract (fix for the first benchmark's planner losses):
     the planner prompt leads with the symptom summary triage gathered, the
