@@ -4,8 +4,12 @@ Every mutating tool:
 - takes `dry_run` (default TRUE — callers must opt in to act),
 - is idempotent (converges to a declared target state; config tools no-op when
   the state already matches),
-- validates its target against the sandbox service allowlist and refuses
-  anything else.
+- exposes targets only as the closed `SandboxService` enum (no free-text field
+  exists with which to aim outside the sandbox) and re-validates at runtime.
+
+Deterministic values are injected server-side, never model-supplied: the
+compose namespace comes from the controller bound at build time, and the
+config tools' target ("app") is fixed in the tool body.
 
 NOTE: no `from __future__ import annotations` here — FastMCP 1.9.4 inspects real
 (non-string) annotations when registering tools.
@@ -18,7 +22,12 @@ import structlog
 from mcp.server.fastmcp import FastMCP
 from pydantic import BaseModel, ConfigDict, Field
 
-from autopilot.mcp_servers.guards import ensure_sandbox_service, truncate
+from autopilot.mcp_servers.guards import (
+    SANDBOX_COMPOSE_PROJECT,
+    SandboxService,
+    ensure_sandbox_service,
+    truncate,
+)
 from autopilot.sandbox.controller import SandboxController
 
 log = structlog.get_logger("autopilot.mcp.infra")
@@ -27,6 +36,7 @@ log = structlog.get_logger("autopilot.mcp.infra")
 class OpResult(BaseModel):
     tool: str
     target: str
+    namespace: str = SANDBOX_COMPOSE_PROJECT  # injected server-side, never a param
     dry_run: bool
     changed: bool  # state differed from target (or would, under dry_run)
     executed: bool  # an action actually ran (always False under dry_run)
@@ -69,7 +79,7 @@ def build_infra_server(ctrl: SandboxController | None = None) -> FastMCP:
     )
 
     @mcp.tool()
-    def restart_service(service: str, dry_run: bool = True) -> OpResult:
+    def restart_service(service: SandboxService, dry_run: bool = True) -> OpResult:
         """Restart one sandbox service. Idempotent: converges to a freshly-running
         service. dry_run=true (default) only reports what would happen."""
         service = ensure_sandbox_service(service)
@@ -81,7 +91,7 @@ def build_infra_server(ctrl: SandboxController | None = None) -> FastMCP:
                                 detail=f"{verb} sandbox service '{service}'"))
 
     @mcp.tool()
-    def scale_service(service: str,
+    def scale_service(service: SandboxService,
                       replicas: Annotated[int, Field(ge=0, le=3)],
                       dry_run: bool = True) -> OpResult:
         """Scale one sandbox service to N replicas (0 stops it). Idempotent: converges

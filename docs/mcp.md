@@ -11,15 +11,71 @@ make mcp-knowledge    # runbook / past-incident retrieval + outcome recording
 
 Guardrails common to the whole surface:
 
-- **Sandbox-only.** Service-targeting tools validate against the compose-service
-  allowlist (`app`, `worker`, `downstream`, `db`, `queue`) and refuse anything
-  else. The allowlist is test-enforced to match `sandbox/docker-compose.yml`.
+- **Sandbox-only.** Service-targeting params are closed enums over the
+  compose-service vocabulary (`app`, `worker`, `downstream`, `db`, `queue`) —
+  out-of-enum values die at schema validation, and a runtime guard re-validates
+  for direct in-process calls. The vocabulary is test-enforced to match
+  `sandbox/docker-compose.yml`.
 - **Dry-run by default.** Every mutating tool takes `dry_run` defaulting to
   `true`; callers must explicitly opt in to act.
 - **Idempotent mutations.** Mutating tools converge to a declared target state;
   config tools no-op (`changed=false`) when the state already matches.
 - **Summarized outputs.** Telemetry never returns raw dumps: logs come back as
   deduplicated message groups (hard cap 200), metrics as windowed summaries.
+
+## Design patterns
+
+### Server-side parameter injection
+
+Known deterministic values are never model-supplied parameters — they are
+injected server-side, so the model cannot hallucinate them, they cost zero
+prompt/output tokens, and the sandbox-only guarantee is structural rather than
+validated:
+
+| Value | How it is injected |
+|---|---|
+| Sandbox namespace / compose target | `SandboxController` bound at server build time; echoed read-only as `OpResult.namespace` |
+| Active incident id | `RunContext.incident_id`, set by the pipeline per run; `record_outcome` reads it (and errors if unbound). A spoofed `incident_id` argument is ignored by the SDK — the binding wins |
+| Config tools' target service (`app`) | fixed in the tool body of `apply_config` / `rollback` |
+
+Model-facing signatures expose only genuine decisions: which tool, which
+service **from a closed enum**, `replicas`, `dry_run`, and free-text only where
+free text is the point (search queries, log filters).
+
+### Stage-scoped tool exposure
+
+`mcp_servers/exposure.py` maps each pipeline stage to the minimal server
+subset; later stages pass `filter_servers(stage, servers)` to each LLM call
+instead of the full catalog. Fewer tools per call = fewer prompt tokens and a
+smaller action surface (a stage that cannot see a tool cannot call it).
+
+| Stage | Servers exposed |
+|---|---|
+| `triage` | telemetry + knowledge |
+| `root_cause` | telemetry + knowledge |
+| `planner` | **none** — it reasons over evidence already gathered |
+| `executor` | infra/ops only (post-HITL) |
+| `verification` | telemetry only |
+
+Unknown stages raise; new stages must be added to `STAGE_SERVERS` explicitly —
+the default is no tools.
+
+### Why not a gateway / dynamic discovery / code-execution mode
+
+At this scale — 3 local stdio servers, ~12 tools, one agent — heavier patterns
+cost more than they return:
+
+- **Gateway/router:** an extra process and hop with nothing to route; there is
+  one consumer and three servers, all local. Static wiring is simpler to test
+  and audit.
+- **Dynamic tool discovery / tool search:** pays off at hundreds of tools where
+  the catalog can't fit in a prompt. Twelve tool schemas fit cheaply, and the
+  static stage map is stricter than discovery: it *removes* tools from stages
+  rather than helping stages find more.
+- **Code-execution mode** (model writes code that calls tools): adds a second
+  execution surface that would have to be sandboxed separately, undermining the
+  single hard guarantee (all actions flow through enumerated, typed, HITL-gated
+  tool calls — which are themselves the audit log).
 
 All results are JSON-serialized Pydantic models; field types below use Python
 notation. Errors (guard refusals, invalid input) surface as MCP tool errors
@@ -34,7 +90,7 @@ with counts, most frequent first.
 
 | Input | Type | Default | Notes |
 |---|---|---|---|
-| `service` | `str \| None` | `None` | must be a sandbox service if given |
+| `service` | `SandboxService \| None` | `None` | closed enum of sandbox services |
 | `contains` | `str \| None` | `None` | case-insensitive substring filter |
 | `since_minutes` | `int` | `15` | clamped to 1–240 |
 | `limit` | `int` | `50` | clamped to 1–200 (hard cap) |
@@ -79,7 +135,7 @@ lines emitted while it ran (capped at 20 events).
 
 | Input | Type | Default | Notes |
 |---|---|---|---|
-| `path` | `str` | `"/work"` | only `/work`, `/healthz`, `/metrics` |
+| `path` | `TraceablePath` | `"/work"` | closed enum: `/work`, `/healthz`, `/metrics` |
 
 Output `TraceResult`: `path: str`, `status: int | None`, `latency_ms: float`,
 `ok: bool`, `body_excerpt: str` (≤500 chars), `error: str | None`,
@@ -88,7 +144,8 @@ Output `TraceResult`: `path: str`, `status: int | None`, `latency_ms: float`,
 ## Infra/Ops server — `autopilot-infra`
 
 All mutating tools share the output shape `OpResult`: `tool: str`,
-`target: str`, `dry_run: bool`, `changed: bool`, `executed: bool`,
+`target: str`, `namespace: str` (injected server-side, always
+`autopilot-sandbox`), `dry_run: bool`, `changed: bool`, `executed: bool`,
 `success: bool`, `detail: str`. Under `dry_run`, `executed` is always `false`
 and `detail` describes exactly what would happen.
 
@@ -96,14 +153,14 @@ and `detail` describes exactly what would happen.
 
 | Input | Type | Default | Notes |
 |---|---|---|---|
-| `service` | `str` | — | sandbox services only |
+| `service` | `SandboxService` | — | closed enum of sandbox services |
 | `dry_run` | `bool` | `true` | |
 
 ### `scale_service`
 
 | Input | Type | Default | Notes |
 |---|---|---|---|
-| `service` | `str` | — | sandbox services only |
+| `service` | `SandboxService` | — | closed enum of sandbox services |
 | `replicas` | `int` | — | 0–3; 0 stops the service |
 | `dry_run` | `bool` | `true` | |
 
@@ -160,18 +217,20 @@ Same inputs as `search_runbooks`. Output `SearchIncidentsResult`: `query: str`,
 
 ### `record_outcome`
 
-Record how an incident turned out. Idempotent: upserts by `incident_id`.
+Record how the **active** incident turned out. The incident id is injected
+server-side from the run-bound `RunContext` — it is not a model-facing
+parameter, and the tool errors if no incident is bound. Idempotent: upserts by
+the bound incident id.
 
 | Input | Type | Default |
 |---|---|---|
-| `incident_id` | `str` | — |
 | `summary` | `str` | — |
 | `root_cause` | `str` | — |
 | `remediation` | `str` | — |
 | `resolved` | `bool` | — |
 | `notes` | `str` | `""` |
 
-Output `RecordOutcomeResult`: `incident_id: str`, `doc_id: int`,
+Output `RecordOutcomeResult`: `incident_id: str` (the injected id), `doc_id: int`,
 `created: bool` (`false` = existing record updated).
 
 ## Testing
@@ -179,6 +238,8 @@ Output `RecordOutcomeResult`: `incident_id: str`, `doc_id: int`,
 `tests/test_mcp_servers.py` exercises every tool over an in-memory MCP session
 (`mcp.shared.memory`) against a fake controller / in-memory store — offline, no
 Docker, mock mode. Covered: schema validation of all results, `dry_run`
-defaults honored (no action recorded), idempotent no-ops, sandbox-guard
-refusals, allowlist↔compose sync. `tests/test_knowledge_store.py` covers the
-store itself.
+defaults honored (no action recorded), idempotent no-ops, adversarial target
+rejection (foreign names, shell injection strings, traversal paths — all die at
+the enum), server-side injection (namespace echoed, incident id bound, spoofed
+`incident_id` args ignored), stage-exposure minimal sets, enum↔compose sync.
+`tests/test_knowledge_store.py` covers the store itself.

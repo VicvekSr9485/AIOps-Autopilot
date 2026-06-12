@@ -3,6 +3,10 @@ backed by the local SQLite vector store (see store.py). Seeded with the runbook
 corpus on build; record_outcome upserts by incident id so re-recording the same
 incident updates rather than duplicates.
 
+The incident id is NOT a model-facing parameter: it is injected server-side
+from the RunContext the pipeline binds per run, so the model cannot hallucinate
+or spoof which incident an outcome is recorded against.
+
 NOTE: no `from __future__ import annotations` here — FastMCP 1.9.4 inspects real
 (non-string) annotations when registering tools.
 """
@@ -13,6 +17,7 @@ import structlog
 from mcp.server.fastmcp import FastMCP
 from pydantic import BaseModel, Field
 
+from autopilot.mcp_servers.context import RunContext
 from autopilot.mcp_servers.guards import truncate
 from autopilot.mcp_servers.runbooks import SEED_RUNBOOKS
 from autopilot.mcp_servers.store import KnowledgeStore
@@ -60,8 +65,10 @@ def seed_store(store: KnowledgeStore) -> None:
     log.info("runbooks_seeded", step="mcp.knowledge", count=len(SEED_RUNBOOKS))
 
 
-def build_knowledge_server(store: KnowledgeStore | None = None, seed: bool = True) -> FastMCP:
+def build_knowledge_server(store: KnowledgeStore | None = None, seed: bool = True,
+                           context: RunContext | None = None) -> FastMCP:
     store = store or KnowledgeStore()
+    context = context or RunContext()
     if seed:
         seed_store(store)
     mcp = FastMCP(
@@ -98,10 +105,12 @@ def build_knowledge_server(store: KnowledgeStore | None = None, seed: bool = Tru
         return SearchIncidentsResult(query=query, results=hits)
 
     @mcp.tool()
-    def record_outcome(incident_id: str, summary: str, root_cause: str,
-                       remediation: str, resolved: bool, notes: str = "") -> RecordOutcomeResult:
-        """Record how an incident turned out so future searches can retrieve it.
-        Idempotent: re-recording the same incident_id updates the existing record."""
+    def record_outcome(summary: str, root_cause: str, remediation: str,
+                       resolved: bool, notes: str = "") -> RecordOutcomeResult:
+        """Record how the ACTIVE incident turned out so future searches can retrieve
+        it (the incident id is bound server-side). Idempotent: re-recording updates
+        the existing record."""
+        incident_id = context.require_incident_id()
         title = f"[{'resolved' if resolved else 'unresolved'}] {truncate(summary, 120)}"
         body = (
             f"Summary: {summary}\n"

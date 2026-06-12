@@ -1,6 +1,8 @@
 """MCP surface tests (offline, mock mode, no Docker): every tool is callable over
 an in-memory MCP session, output schemas validate, mutating tools honor dry_run
-(default true), and the sandbox-only guard refuses out-of-scope targets."""
+(default true), the sandbox-only guarantee holds even under adversarial input
+(targets are closed enums; deterministic values are injected server-side, never
+model-supplied), and stage-scoped exposure returns the minimal toolset."""
 
 from __future__ import annotations
 
@@ -12,7 +14,13 @@ from pathlib import Path
 import pytest
 from mcp.shared.memory import create_connected_server_and_client_session
 
-from autopilot.mcp_servers.guards import SANDBOX_SERVICES
+from autopilot.mcp_servers.context import RunContext
+from autopilot.mcp_servers.exposure import STAGE_SERVERS, filter_servers, servers_for_stage
+from autopilot.mcp_servers.guards import (
+    SANDBOX_SERVICES,
+    SandboxViolation,
+    ensure_sandbox_service,
+)
 from autopilot.mcp_servers.infra import HealthCheckResult, OpResult, build_infra_server
 from autopilot.mcp_servers.knowledge import (
     RecordOutcomeResult,
@@ -162,7 +170,7 @@ async def test_query_logs_filters_and_guards():
                            {"service": "worker", "contains": "job"})))
     assert filtered.matched == 3
     assert all(g.service == "worker" for g in filtered.groups)
-    assert "refusing" in error_text(await call(server, "query_logs", {"service": "nginx"}))
+    assert (await call(server, "query_logs", {"service": "nginx"})).isError
 
 
 async def test_query_metrics_windows():
@@ -198,7 +206,7 @@ async def test_get_trace_and_path_guard():
     result = TraceResult.model_validate(payload(await call(server, "get_trace", {})))
     assert result.ok and result.status == 200 and result.path == "/work"
     assert len(result.events) == 2
-    assert "refusing" in error_text(await call(server, "get_trace", {"path": "/admin"}))
+    assert (await call(server, "get_trace", {"path": "/admin"})).isError
 
 
 # --------------------------------------------------------------------- infra
@@ -221,6 +229,7 @@ async def test_mutating_tools_honor_dry_run_default():
                        ("rollback", {})]:
         result = OpResult.model_validate(payload(await call(server, tool, args)))
         assert result.dry_run and not result.executed and result.success
+        assert result.namespace == "autopilot-sandbox"  # injected server-side
     assert ctrl.calls == []  # nothing ever touched the (fake) stack
 
 
@@ -263,15 +272,47 @@ async def test_apply_config_rejects_unknown_keys():
     assert result.isError
 
 
-async def test_sandbox_only_guard_refuses_foreign_targets():
+async def test_sandbox_only_guard_refuses_adversarial_targets():
+    """No tool can be aimed outside the sandbox: foreign/injection-style targets
+    die at schema validation (closed enum) and nothing ever reaches the stack."""
     ctrl = FakeController()
-    server = build_infra_server(ctrl)
-    for tool, args in [("restart_service", {"service": "host-nginx", "dry_run": False}),
-                       ("scale_service", {"service": "db; rm -rf /", "replicas": 0,
-                                          "dry_run": False})]:
-        text = error_text(await call(server, tool, args))
-        assert "refusing" in text and "autopilot-sandbox" in text
+    infra = build_infra_server(ctrl)
+    telemetry = build_telemetry_server(ctrl)
+    adversarial = ["host-nginx", "db; rm -rf /", "../../etc", "app ", "APP", "", "*"]
+    for service in adversarial:
+        for tool, args in [("restart_service", {"service": service, "dry_run": False}),
+                           ("scale_service", {"service": service, "replicas": 0,
+                                              "dry_run": False})]:
+            assert (await call(infra, tool, args)).isError, (tool, service)
+        assert (await call(telemetry, "query_logs", {"service": service})).isError
+    for path in ["/admin", "http://evil.example", "/work/../etc/passwd"]:
+        assert (await call(telemetry, "get_trace", {"path": path})).isError
     assert ctrl.calls == []
+
+
+def test_runtime_guard_backs_up_schema_enum():
+    """Defense in depth: direct in-process calls (no MCP schema layer) still hit
+    ensure_sandbox_service."""
+    with pytest.raises(SandboxViolation, match="refusing"):
+        ensure_sandbox_service("host-nginx")
+    assert ensure_sandbox_service("app") == "app"
+
+
+async def test_target_params_are_closed_enums():
+    """Model-facing target params expose ONLY the sandbox vocabulary — there is
+    no free-text field with which to name anything else."""
+    def enum_of(prop: dict) -> list:
+        if "enum" in prop:
+            return prop["enum"]
+        return next(o["enum"] for o in prop["anyOf"] if "enum" in o)
+
+    infra_schemas = await tool_schemas(build_infra_server(FakeController()))
+    tele_schemas = await tool_schemas(build_telemetry_server(FakeController()))
+    for schema in (infra_schemas["restart_service"], infra_schemas["scale_service"],
+                   tele_schemas["query_logs"]):
+        assert set(enum_of(schema["properties"]["service"])) == set(SANDBOX_SERVICES)
+    assert set(enum_of(tele_schemas["get_trace"]["properties"]["path"])) == {
+        "/work", "/healthz", "/metrics"}
 
 
 async def test_health_check_reads_components():
@@ -291,10 +332,14 @@ def test_service_allowlist_matches_compose_file():
 # ----------------------------------------------------------------- knowledge
 
 
+INCIDENT_ID = "inc-abc123"
+
+
 @pytest.fixture
 def knowledge():
     store = KnowledgeStore(":memory:")
-    return store, build_knowledge_server(store=store)
+    context = RunContext(incident_id=INCIDENT_ID)
+    return store, build_knowledge_server(store=store, context=context)
 
 
 async def test_knowledge_tools_listed(knowledge):
@@ -317,14 +362,14 @@ async def test_search_runbooks_ranks_relevant_first(knowledge):
     assert data.results[0].slug == "queue-consumer-stall"
 
 
-async def test_record_outcome_upserts_and_is_searchable(knowledge):
+async def test_record_outcome_injects_incident_id_and_upserts(knowledge):
     store, server = knowledge
-    args = {"incident_id": "inc-abc123", "summary": "worker stalled, queue backlog",
+    args = {"summary": "worker stalled, queue backlog",
             "root_cause": "queue consumer paused", "remediation": "restart worker",
             "resolved": True}
     first = RecordOutcomeResult.model_validate(
         payload(await call(server, "record_outcome", args)))
-    assert first.created
+    assert first.created and first.incident_id == INCIDENT_ID  # injected, not passed
     second = RecordOutcomeResult.model_validate(
         payload(await call(server, "record_outcome", {**args, "notes": "verified"})))
     assert not second.created and second.doc_id == first.doc_id
@@ -332,5 +377,74 @@ async def test_record_outcome_upserts_and_is_searchable(knowledge):
 
     found = SearchIncidentsResult.model_validate(payload(await call(
         server, "search_past_incidents", {"query": "queue backlog worker stalled"})))
-    assert found.results[0].incident_id == "inc-abc123"
+    assert found.results[0].incident_id == INCIDENT_ID
     assert "restart worker" in found.results[0].excerpt
+
+
+# ------------------------------------------------------------ stage exposure
+
+
+def test_stage_server_map_is_minimal():
+    assert servers_for_stage("triage") == {"telemetry", "knowledge"}
+    assert servers_for_stage("root_cause") == {"telemetry", "knowledge"}
+    assert servers_for_stage("planner") == frozenset()
+    assert servers_for_stage("executor") == {"infra"}
+    assert servers_for_stage("verification") == {"telemetry"}
+    with pytest.raises(KeyError, match="unknown pipeline stage"):
+        servers_for_stage("benchmark")
+
+
+async def test_filter_servers_exposes_only_stage_tools():
+    ctrl = FakeController()
+    servers = {
+        "telemetry": build_telemetry_server(ctrl),
+        "infra": build_infra_server(ctrl),
+        "knowledge": build_knowledge_server(store=KnowledgeStore(":memory:")),
+    }
+
+    async def exposed_tools(stage: str) -> set[str]:
+        names: set[str] = set()
+        for server in filter_servers(stage, servers).values():
+            names |= set(await tool_schemas(server))
+        return names
+
+    assert await exposed_tools("triage") == {
+        "query_logs", "query_metrics", "get_active_alerts", "get_trace",
+        "search_runbooks", "search_past_incidents", "record_outcome",
+    }
+    executor_tools = await exposed_tools("executor")
+    assert executor_tools == {"restart_service", "scale_service", "apply_config",
+                              "rollback", "health_check"}
+    assert await exposed_tools("planner") == set()  # planner gets NO tools
+    assert "restart_service" not in await exposed_tools("triage")
+    assert "query_logs" not in executor_tools
+
+
+def test_every_stage_maps_to_known_servers():
+    from autopilot.mcp_servers.exposure import SERVER_NAMES
+    for stage, names in STAGE_SERVERS.items():
+        assert names <= SERVER_NAMES, stage
+
+
+async def test_record_outcome_ignores_spoofed_incident_id(knowledge):
+    """incident_id is not a model-facing param: it does not appear in the input
+    schema, and a model that supplies one anyway cannot override the binding."""
+    store, server = knowledge
+    schemas = await tool_schemas(server)
+    assert "incident_id" not in schemas["record_outcome"]["properties"]
+
+    result = RecordOutcomeResult.model_validate(payload(await call(
+        server, "record_outcome",
+        {"summary": "s", "root_cause": "r", "remediation": "m", "resolved": True,
+         "incident_id": "inc-spoofed"})))  # unknown arg: ignored by the SDK
+    assert result.incident_id == INCIDENT_ID
+    assert store.count("incident") == 1
+    assert store.search("s", kind="incident", k=10)[0].key == INCIDENT_ID
+
+
+async def test_record_outcome_requires_bound_incident():
+    server = build_knowledge_server(store=KnowledgeStore(":memory:"))  # no context
+    result = await call(server, "record_outcome",
+                        {"summary": "s", "root_cause": "r", "remediation": "m",
+                         "resolved": True})
+    assert "no active incident" in error_text(result)

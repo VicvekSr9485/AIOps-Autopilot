@@ -12,13 +12,19 @@ NOTE: no `from __future__ import annotations` here — FastMCP 1.9.4 inspects re
 import json
 import time
 from datetime import UTC, datetime, timedelta
+from typing import Literal
 
 import structlog
 from mcp.server.fastmcp import FastMCP
 from pydantic import BaseModel, Field
 
 from autopilot.ingestion.normalize import parse_compose_logs, synthesize_alert
-from autopilot.mcp_servers.guards import SandboxViolation, ensure_sandbox_service, truncate
+from autopilot.mcp_servers.guards import (
+    SandboxService,
+    SandboxViolation,
+    ensure_sandbox_service,
+    truncate,
+)
 from autopilot.models import AlertEvent
 from autopilot.sandbox.controller import ProbeSnapshot, SandboxController
 
@@ -28,6 +34,8 @@ MAX_LOG_GROUPS = 200  # hard ceiling on returned log groups, whatever the caller
 METRIC_NAMES = ("requests_total", "errors_total", "work_success_total",
                 "queue_depth", "jobs_processed")
 TRACEABLE_PATHS = ("/work", "/healthz", "/metrics")
+# Closed enum for the model-facing param; same membership as TRACEABLE_PATHS.
+TraceablePath = Literal["/work", "/healthz", "/metrics"]
 
 
 class LogGroup(BaseModel):
@@ -106,7 +114,7 @@ def build_telemetry_server(ctrl: SandboxController | None = None) -> FastMCP:
     )
 
     @mcp.tool()
-    def query_logs(service: str | None = None, contains: str | None = None,
+    def query_logs(service: SandboxService | None = None, contains: str | None = None,
                    since_minutes: int = 15, limit: int = 50) -> LogQueryResult:
         """Search recent sandbox logs. Returns deduplicated (service, message) groups
         with occurrence counts, most frequent first — never raw line dumps. Optional
@@ -188,7 +196,7 @@ def build_telemetry_server(ctrl: SandboxController | None = None) -> FastMCP:
                                   alerts=alerts)
 
     @mcp.tool()
-    def get_trace(path: str = "/work") -> TraceResult:
+    def get_trace(path: TraceablePath = "/work") -> TraceResult:
         """Trace one request against the sandbox app: timed status/latency plus the
         stack log lines emitted while it ran. Only sandbox app endpoints are allowed."""
         if path not in TRACEABLE_PATHS:
