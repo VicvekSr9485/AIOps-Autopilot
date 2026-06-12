@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -40,6 +41,17 @@ class ProbeSnapshot(BaseModel):
     @property
     def healthy(self) -> bool:
         return self.healthz_status == 200 and self.work_status == 200
+
+
+class RequestObservation(BaseModel):
+    """One timed HTTP request against the sandbox app (trace-style observation)."""
+
+    path: str
+    started_at: datetime
+    status: int | None = None  # None = request failed before a response
+    latency_ms: float
+    body: dict | str | None = None
+    error: str | None = None
 
 
 class SandboxController:
@@ -77,6 +89,14 @@ class SandboxController:
     def restart(self, service: str) -> None:
         self._compose("restart", service)
 
+    def scale(self, service: str, replicas: int) -> None:
+        """Scale a compose service. NOTE: services pin container_name, so compose
+        rejects replicas > 1; 0 stops the service, 1 converges to running."""
+        self._compose(
+            "up", "-d", "--no-build", "--no-recreate",
+            "--scale", f"{service}={replicas}", service,
+        )
+
     def pause(self, service: str) -> None:
         self._compose("pause", service)
 
@@ -102,6 +122,10 @@ class SandboxController:
     def default_app_config() -> dict:
         return json.loads(DEFAULT_APP_CONFIG_PATH.read_text())
 
+    def read_app_config(self) -> dict:
+        self.ensure_app_config()
+        return json.loads(APP_CONFIG_PATH.read_text())
+
     def ensure_app_config(self) -> None:
         if not APP_CONFIG_PATH.exists():
             self.write_app_config(self.default_app_config())
@@ -121,6 +145,27 @@ class SandboxController:
             return self._compose(*args)
         except RuntimeError:
             return self._compose("logs", "--no-color", "-t")  # older compose: no --since
+
+    def timed_request(self, path: str) -> RequestObservation:
+        started = datetime.now(UTC)
+        t0 = time.perf_counter()
+        try:
+            with httpx.Client(base_url=self.base_url, timeout=10.0) as client:
+                resp = client.get(path)
+            latency_ms = (time.perf_counter() - t0) * 1000
+            try:
+                body: dict | str = resp.json()
+            except ValueError:
+                body = resp.text[:500]
+            return RequestObservation(
+                path=path, started_at=started, status=resp.status_code,
+                latency_ms=latency_ms, body=body,
+            )
+        except Exception as e:
+            return RequestObservation(
+                path=path, started_at=started, status=None,
+                latency_ms=(time.perf_counter() - t0) * 1000, error=str(e)[:300],
+            )
 
     def probe(self) -> ProbeSnapshot:
         snap = ProbeSnapshot(captured_at=datetime.now(UTC))

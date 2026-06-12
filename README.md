@@ -24,15 +24,24 @@ make sandbox-up             # start the sandboxed target stack
 | Path | Purpose |
 |---|---|
 | `src/autopilot/llm/` | Typed Qwen client: role-based model tiering, cost metering, mock mode |
-| `src/autopilot/ingestion/` | Alert/log/metric ingestion (TODO) |
+| `src/autopilot/ingestion/` | Normalizes raw sandbox captures into typed Incidents |
 | `src/autopilot/pipeline/` | Agent stages: triage → root cause → remediation → verify (TODO) |
-| `src/autopilot/mcp_servers/` | MCP tool servers exposed to the agent (TODO) |
-| `src/autopilot/sandbox/` | Sandbox-only action executor (TODO) |
-| `src/autopilot/harness/` | Fault-injection harness with ground truth (TODO) |
+| `src/autopilot/mcp_servers/` | MCP tool servers: telemetry, infra/ops, knowledge — see [docs/mcp.md](docs/mcp.md) |
+| `src/autopilot/sandbox/` | Deterministic controller for the sandbox compose stack |
+| `src/autopilot/harness/` | Fault-injection harness (5 faults) with ground truth |
 | `src/autopilot/benchmark/` | Agent-vs-baseline benchmark runner (TODO) |
 | `sandbox/` | docker-compose stack the agent is allowed to act on |
 | `dashboard/` | Vite + React UI (stub) |
 | `docs/` | Architecture and judging-facing docs |
+
+## MCP tool surface
+
+The agent observes and acts only through three MCP servers (official Python
+SDK, stdio): **telemetry** (summarized logs/metrics/alerts/traces), **infra**
+(sandbox-only mutations, `dry_run` defaults to true, idempotent), and
+**knowledge** (runbook + past-incident vector search, outcome recording).
+Run them with `make mcp-telemetry | mcp-infra | mcp-knowledge`; full tool
+schemas in [docs/mcp.md](docs/mcp.md).
 
 ## LLM usage
 

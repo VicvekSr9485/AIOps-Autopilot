@@ -2,7 +2,8 @@ VENV := .venv
 PY := $(VENV)/bin/python
 PIP := $(VENV)/bin/pip
 
-.PHONY: install test test-sandbox lint run-api sandbox-up sandbox-down sandbox-reset bench
+.PHONY: install test test-sandbox lint run-api sandbox-up sandbox-down sandbox-reset bench \
+	mcp-telemetry mcp-infra mcp-knowledge
 
 install:
 	test -d $(VENV) || python3 -m venv $(VENV)
@@ -32,3 +33,13 @@ sandbox-reset:
 
 bench:
 	$(PY) -m autopilot.benchmark
+
+# stdio MCP servers (see docs/mcp.md)
+mcp-telemetry:
+	$(PY) -m autopilot.mcp_servers telemetry
+
+mcp-infra:
+	$(PY) -m autopilot.mcp_servers infra
+
+mcp-knowledge:
+	$(PY) -m autopilot.mcp_servers knowledge
