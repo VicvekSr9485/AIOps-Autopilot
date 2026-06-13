@@ -3,8 +3,7 @@
 .env.*
 !.env.example
 
-# local-only / personal (not part of the public submission):
-# Claude Code project memory + path-scoped rules, and submission-prep drafts.
+# Project memory + path-scoped rules, and submission-prep drafts.
 CLAUDE.md
 .claude/
 docs/BLOG.md
