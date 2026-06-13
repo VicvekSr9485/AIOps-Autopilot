@@ -4,6 +4,11 @@ This directory contains everything needed to run the backend on **Alibaba Cloud
 compute (ECS)** with its LLM requests going to the **Qwen Cloud** (Model Studio
 / DashScope) inference endpoint on `*.aliyuncs.com`.
 
+> **Just want the turnkey, copy-paste path to a green `mocked:false` proof** (with
+> a pre-record checklist and a recording shot-list)? See
+> [docs/DEPLOY-RUNBOOK.md](../docs/DEPLOY-RUNBOOK.md). This file is the reference;
+> the runbook is the script.
+
 ```
                 Alibaba Cloud ECS instance
    ┌───────────────────────────────────────────────┐

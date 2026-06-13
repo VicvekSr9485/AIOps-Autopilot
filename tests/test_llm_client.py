@@ -58,3 +58,28 @@ def test_run_token_cap_refuses_before_the_call(monkeypatch):
 def test_no_cap_when_env_unset(monkeypatch):
     monkeypatch.delenv("AUTOPILOT_RUN_TOKEN_CAP", raising=False)
     assert load_llm_config().run_token_cap is None
+
+
+def test_resilience_config_armed_from_env(monkeypatch):
+    """Timeout, bounded retries, and the token cap are read from env — the same
+    knobs the deploy compose sets, so they are armed in the deployed config."""
+    monkeypatch.setenv("AUTOPILOT_LLM_TIMEOUT_S", "12.5")
+    monkeypatch.setenv("AUTOPILOT_LLM_MAX_RETRIES", "4")
+    monkeypatch.setenv("AUTOPILOT_RUN_TOKEN_CAP", "200000")
+    cfg = load_llm_config()
+    assert cfg.request_timeout_s == 12.5
+    assert cfg.max_retries == 4
+    assert cfg.run_token_cap == 200000
+
+
+def test_real_client_applies_timeout_and_retries(monkeypatch):
+    """In real mode the openai client is built with the bounded timeout/retries
+    (constructed only — no network call is made here)."""
+    monkeypatch.setenv("AUTOPILOT_MOCK_LLM", "0")
+    monkeypatch.setenv("DASHSCOPE_API_KEY", "sk-test-not-real")
+    monkeypatch.setenv("AUTOPILOT_LLM_TIMEOUT_S", "15")
+    monkeypatch.setenv("AUTOPILOT_LLM_MAX_RETRIES", "3")
+    client = QwenClient(config=load_llm_config())
+    assert client._client is not None  # real SDK client was constructed
+    assert client._client.max_retries == 3
+    assert float(client._client.timeout) == 15.0

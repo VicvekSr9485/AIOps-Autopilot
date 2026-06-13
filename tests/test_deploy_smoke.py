@@ -24,6 +24,7 @@ import time
 import httpx
 import pytest
 
+from autopilot.cloud.qwen_live import CloudSelfCheck, run_self_check
 from autopilot.harness.synthetic import FAULT_IDS
 from autopilot.mcp_servers.guards import (
     SANDBOX_SERVICES,
@@ -57,6 +58,31 @@ def test_executor_sandbox_guard_holds():
             ensure_sandbox_service(hostile)
 
 
+def test_selfcheck_mock_vs_real_headline_distinct():
+    """A mock self-check and a real one must be UNMISTAKABLY different, so a mock
+    run can never be passed off as a real cloud proof. Runs offline (conftest
+    forces AUTOPILOT_MOCK_LLM=1) — no network, no tokens."""
+    mock = run_self_check()
+    assert mock.mocked is True and mock.ok is True
+    assert "MOCK MODE" in mock.headline  # the mock sentinel
+    assert "mocked=false" not in mock.headline
+
+    # A real OK result (constructed, not called) reads REAL and never "MOCK MODE"
+    # (note its text contains "mocked=false", so a naive "MOCK" check is wrong).
+    real = CloudSelfCheck(
+        ok=True, mocked=False, checked_at="t",
+        endpoint="https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+        cloud_host="dashscope-intl.aliyuncs.com",
+        region="alibaba-cloud-intl (Singapore)", role="default",
+        model="qwen3.7-plus", model_by_role={"default": "qwen3.7-plus"},
+        input_tokens=20, output_tokens=2, est_cost_usd=0.000007,
+        tier="free", latency_ms=412.0,
+    )
+    assert real.headline.startswith("REAL") and "mocked=false" in real.headline
+    assert "MOCK MODE" not in real.headline
+    assert mock.headline != real.headline
+
+
 # --------------------------------------------------------------------------- #
 # Env-gated: hit the live deployment.
 # --------------------------------------------------------------------------- #
@@ -84,13 +110,21 @@ def test_deployed_cloud_selfcheck(client):
     resp = client.get("/api/cloud/selfcheck", timeout=45.0)
     assert resp.status_code == 200
     body = resp.json()
+    # Loud, camera-proof line in the smoke output (run with `make smoke-deploy`).
+    print(f"\n  CLOUD SELF-CHECK → {body.get('headline')}\n")
     assert body["ok"] is True, f"cloud self-check failed: {body.get('error')}"
     assert "aliyuncs" in body["cloud_host"], body["cloud_host"]
 
     if REAL_CLOUD:
         # Prove it was a genuine round-trip, not the offline mock short-circuit.
-        assert body["mocked"] is False
+        assert body["mocked"] is False, (
+            "AUTOPILOT_SMOKE_REAL_CLOUD=1 but the deployed backend is in MOCK mode "
+            "— this is NOT a real proof. Unset AUTOPILOT_MOCK_LLM on the server."
+        )
+        assert body["headline"].startswith("REAL") and "MOCK MODE" not in body["headline"]
+        assert body["model"] in body["model_by_role"].values()
         assert (body["input_tokens"] or 0) + (body["output_tokens"] or 0) > 0
+        assert body["est_cost_usd"] is not None
         assert body["latency_ms"] and body["latency_ms"] > 0
 
 

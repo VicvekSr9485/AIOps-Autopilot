@@ -29,7 +29,7 @@ import time
 from urllib.parse import urlsplit
 
 import structlog
-from pydantic import BaseModel
+from pydantic import BaseModel, computed_field
 
 from autopilot.config import MODEL_BY_ROLE, load_llm_config
 from autopilot.llm.client import LLMResponse, QwenCallError, QwenClient
@@ -66,6 +66,25 @@ class CloudSelfCheck(BaseModel):
     tier: str | None = None
     sample_text: str | None = None
     error: str | None = None
+
+    @computed_field  # serialized into the JSON response + CLI output
+    @property
+    def headline(self) -> str:
+        """One unmistakable line so a MOCK run can never be mistaken for a real
+        one (on camera, in logs, or in the API response)."""
+        if self.mocked:
+            return (
+                "MOCK MODE — NOT a real Qwen Cloud call (AUTOPILOT_MOCK_LLM is set); "
+                "this proves NOTHING about cloud connectivity"
+            )
+        if self.ok:
+            tokens = (self.input_tokens or 0) + (self.output_tokens or 0)
+            return (
+                f"REAL Qwen Cloud round-trip (mocked=false) — {self.cloud_host} · "
+                f"{self.region} · {self.model} · {tokens} tok · "
+                f"${self.est_cost_usd} · {self.latency_ms}ms"
+            )
+        return f"REAL mode — Qwen Cloud call FAILED: {self.error}"
 
 
 def region_for_host(host: str) -> str:
@@ -151,9 +170,23 @@ def run_self_check(role: str = "default", prompt: str = _PROBE_PROMPT) -> CloudS
     return base
 
 
+def print_banner(result: CloudSelfCheck) -> None:
+    """Print a loud, camera-proof banner: green REAL, red MOCK/FAILED."""
+    real_ok = (not result.mocked) and result.ok
+    mark = "✅" if real_ok else ("⚠️ " if result.mocked else "❌")
+    bar = "═" * 72
+    body = f"\n{bar}\n  {mark}  {result.headline}\n{bar}\n"
+    if sys.stdout.isatty():
+        color = "\033[1;92m" if real_ok else "\033[1;91m"  # bold green / bold red
+        body = f"{color}{body}\033[0m"
+    print(body)
+
+
 def main() -> int:
     result = run_self_check()
+    print_banner(result)
     print(result.model_dump_json(indent=2))
+    print_banner(result)  # repeat AFTER the JSON so it's the last thing on screen
     # Non-zero exit on a real failure so this doubles as a deploy health gate.
     return 0 if result.ok else 1
 

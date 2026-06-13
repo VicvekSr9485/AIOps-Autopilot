@@ -42,7 +42,7 @@ bench-real:
 # Smoke-test a DEPLOYED backend. Requires AUTOPILOT_SMOKE_BASE_URL; with
 # AUTOPILOT_SMOKE_REAL_CLOUD=1 it also asserts a real Qwen Cloud round-trip.
 smoke-deploy:
-	$(PY) -m pytest -m deploy tests/test_deploy_smoke.py
+	$(PY) -m pytest -m deploy -s tests/test_deploy_smoke.py
 
 # stdio MCP servers (see docs/mcp.md)
 mcp-telemetry:

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
@@ -29,10 +30,27 @@ from autopilot.api.schemas import (
 )
 from autopilot.benchmark.metrics import BenchmarkReport
 from autopilot.cloud.qwen_live import CloudSelfCheck, run_self_check
+from autopilot.config import load_llm_config
 from autopilot.models import RemediationStep
 from autopilot.pipeline.hitl import HumanDecision
 
-app = FastAPI(title="AIOps Autopilot", version=__version__)
+
+@asynccontextmanager
+async def _lifespan(app: FastAPI):
+    """Print a loud LLM-mode banner at startup so a MOCK deployment is obvious in
+    the container logs and can never be mistaken for a real one on camera."""
+    cfg = load_llm_config()
+    if cfg.mock_mode:
+        mode = ("⚠️  MOCK (AUTOPILOT_MOCK_LLM=1) — cloud calls SIMULATED; "
+                "/api/cloud/selfcheck reports mocked=true")
+    else:
+        mode = f"✅ REAL — cloud calls hit Qwen Cloud at {cfg.base_url}"
+    bar = "═" * 72
+    print(f"\n{bar}\n  AIOps Autopilot backend · LLM MODE: {mode}\n{bar}\n", flush=True)
+    yield
+
+
+app = FastAPI(title="AIOps Autopilot", version=__version__, lifespan=_lifespan)
 
 # The dashboard dev server (Vite, :5173) calls this API on :8080.
 app.add_middleware(

@@ -19,11 +19,16 @@ services:
     env_file:
       - ../.env
     environment:
-      # Set AUTOPILOT_MOCK_LLM=0 in .env to make the live Qwen Cloud route real.
-      AUTOPILOT_MOCK_LLM: "${AUTOPILOT_MOCK_LLM:-0}"
+      # NOTE: AUTOPILOT_MOCK_LLM is deliberately NOT set here. The app defaults to
+      # REAL when it is unset, so this deploy path cannot accidentally ship a mock
+      # value via the compose environment. (An offline demo opts in by putting
+      # AUTOPILOT_MOCK_LLM=1 in .env; the startup banner + /api/cloud/selfcheck
+      # headline make that mode loud and unmistakable.)
       DASHSCOPE_BASE_URL: "${DASHSCOPE_BASE_URL:-https://dashscope-intl.aliyuncs.com/compatible-mode/v1}"
+      # Resilience on the one external dependency — armed by default in the deploy.
       AUTOPILOT_LLM_TIMEOUT_S: "${AUTOPILOT_LLM_TIMEOUT_S:-30}"
       AUTOPILOT_LLM_MAX_RETRIES: "${AUTOPILOT_LLM_MAX_RETRIES:-2}"
+      AUTOPILOT_RUN_TOKEN_CAP: "${AUTOPILOT_RUN_TOKEN_CAP:-200000}"
     ports:
       - "8080:8080"
     restart: unless-stopped

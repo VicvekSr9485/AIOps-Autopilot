@@ -36,8 +36,19 @@ cd "$APP_DIR"
 # Populate from an Alibaba Cloud secret store / instance metadata, NOT from git.
 if [ ! -f .env ]; then
   cp .env.example .env
-  log "WARNING: wrote .env from .env.example — set DASHSCOPE_API_KEY and"
-  log "         AUTOPILOT_MOCK_LLM=0 before serving real traffic"
+  log "WARNING: wrote .env from .env.example — set DASHSCOPE_API_KEY (and keep"
+  log "         AUTOPILOT_MOCK_LLM unset/0) before serving real traffic"
+fi
+
+# Anti-footgun: a real proof must NOT run in mock mode. Refuse, loudly.
+if grep -qE '^[[:space:]]*AUTOPILOT_MOCK_LLM[[:space:]]*=[[:space:]]*1' .env; then
+  log "FATAL: AUTOPILOT_MOCK_LLM=1 in .env — /api/cloud/selfcheck would be FAKE."
+  log "       Remove it (or set =0) for a real Qwen Cloud proof, then re-run."
+  exit 1
+fi
+if ! grep -qE '^[[:space:]]*DASHSCOPE_API_KEY=sk-[^[:space:]]' .env; then
+  log "FATAL: DASHSCOPE_API_KEY not set to a real key in .env — cannot reach Qwen Cloud."
+  exit 1
 fi
 
 # 4. Build + run the backend ---------------------------------------------------
@@ -47,6 +58,8 @@ docker compose -f deployment/docker-compose.yml up -d --build --wait
 # 5. Verify (bounded) ----------------------------------------------------------
 log "health check"
 curl -fsS --max-time 10 http://localhost:8080/healthz && echo
-log "Qwen Cloud connectivity (ok=true means the deployed backend reached Alibaba Cloud)"
-curl -fsS --max-time 40 http://localhost:8080/api/cloud/selfcheck && echo
-log "done"
+log "Qwen Cloud proof — the LOUD banner below must say REAL / mocked=false:"
+docker compose -f deployment/docker-compose.yml exec -T backend \
+  python -m autopilot.cloud.qwen_live
+log "done — if the banner above is green/REAL with a *.aliyuncs.com host, the"
+log "       deployed backend reached Alibaba Cloud for real."
