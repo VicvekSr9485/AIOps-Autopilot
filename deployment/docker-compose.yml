@@ -1,0 +1,36 @@
+# Deployment orchestration for the AIOps Autopilot backend on a single
+# Alibaba Cloud ECS instance (or any Docker host).
+#
+# This serves the HTTP API only. It deliberately does NOT mount the host Docker
+# socket: the API drives an in-process MockWorld, so the deployed service has no
+# path to the host or any container — the executor's sandbox-only guard is
+# upheld structurally AND by the absence of a Docker socket here. Real-sandbox
+# executor cycles run separately on the host (see DEPLOYMENT.md).
+name: autopilot-deploy
+
+services:
+  backend:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    image: aiops-autopilot-backend:latest
+    container_name: autopilot-backend
+    # Secrets come from ../.env at runtime — never from the image.
+    env_file:
+      - ../.env
+    environment:
+      # Set AUTOPILOT_MOCK_LLM=0 in .env to make the live Qwen Cloud route real.
+      AUTOPILOT_MOCK_LLM: "${AUTOPILOT_MOCK_LLM:-0}"
+      DASHSCOPE_BASE_URL: "${DASHSCOPE_BASE_URL:-https://dashscope-intl.aliyuncs.com/compatible-mode/v1}"
+      AUTOPILOT_LLM_TIMEOUT_S: "${AUTOPILOT_LLM_TIMEOUT_S:-30}"
+      AUTOPILOT_LLM_MAX_RETRIES: "${AUTOPILOT_LLM_MAX_RETRIES:-2}"
+    ports:
+      - "8080:8080"
+    restart: unless-stopped
+    # Image HEALTHCHECK (Dockerfile) governs liveness; surface it to compose.
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=4).status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

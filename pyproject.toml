@@ -33,7 +33,10 @@ where = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
-markers = ["sandbox: integration tests that require a running Docker daemon"]
+markers = [
+    "sandbox: integration tests that require a running Docker daemon",
+    "deploy: smoke tests that hit a deployed backend (AUTOPILOT_SMOKE_BASE_URL)",
+]
 
 [tool.ruff]
 line-length = 100

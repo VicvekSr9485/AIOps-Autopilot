@@ -1,0 +1,33 @@
+# Secrets — NEVER ship these into an image layer.
+.env
+.env.*
+!.env.example
+
+# Python / build caches
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.pytest_cache/
+.ruff_cache/
+dist/
+build/
+
+# Node / dashboard (built separately; not part of the backend image)
+dashboard/node_modules/
+dashboard/dist/
+node_modules/
+
+# VCS / editor / OS
+.git/
+.gitignore
+.idea/
+.vscode/
+.DS_Store
+
+# Generated runtime + bulky artifacts not needed by the API
+sandbox/runtime/
+data/
+logs/
+benchmark_results/
+benchmark_results_real/

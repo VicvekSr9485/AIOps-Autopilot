@@ -48,6 +48,12 @@ class RunTokenCapExceeded(RuntimeError):
     the free tier or the voucher past the cap by more than one call."""
 
 
+class QwenCallError(RuntimeError):
+    """A live Qwen Cloud call failed after the SDK exhausted its bounded
+    retries (or hit the wall-clock timeout). Raised instead of leaking a raw
+    SDK exception so callers can fail gracefully with a stable type."""
+
+
 class QwenClient:
     """One instance per session/run; shares a CostMeter across the whole pipeline."""
 
@@ -63,7 +69,16 @@ class QwenClient:
                 )
             from openai import OpenAI
 
-            self._client = OpenAI(base_url=self.config.base_url, api_key=self.config.api_key)
+            # Bounded resilience on the one external dependency: a wall-clock
+            # timeout on every request and SDK-managed exponential-backoff
+            # retries (429/5xx/timeouts) capped at max_retries. Neither hangs
+            # nor loops unbounded in a deployed run.
+            self._client = OpenAI(
+                base_url=self.config.base_url,
+                api_key=self.config.api_key,
+                timeout=self.config.request_timeout_s,
+                max_retries=self.config.max_retries,
+            )
 
     def complete(
         self,
@@ -87,12 +102,18 @@ class QwenClient:
         if self.config.mock_mode:
             text, input_tokens, output_tokens = self._mock_complete(model, messages)
         else:
-            resp = self._client.chat.completions.create(
-                model=model,
-                messages=messages,
-                temperature=temperature,
-                max_tokens=max_tokens,
-            )
+            try:
+                resp = self._client.chat.completions.create(
+                    model=model,
+                    messages=messages,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                )
+            except Exception as e:  # SDK already retried (max_retries) and timed out
+                raise QwenCallError(
+                    f"Qwen Cloud call failed for step {step!r} (model {model}): "
+                    f"{type(e).__name__}: {str(e)[:300]}"
+                ) from e
             text = resp.choices[0].message.content or ""
             input_tokens = resp.usage.prompt_tokens
             output_tokens = resp.usage.completion_tokens

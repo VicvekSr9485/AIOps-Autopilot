@@ -28,6 +28,7 @@ from autopilot.api.schemas import (
     ScenarioInfo,
 )
 from autopilot.benchmark.metrics import BenchmarkReport
+from autopilot.cloud.qwen_live import CloudSelfCheck, run_self_check
 from autopilot.models import RemediationStep
 from autopilot.pipeline.hitl import HumanDecision
 
@@ -51,6 +52,15 @@ _BENCHMARK_CANDIDATES = [
 @app.get("/healthz")
 def healthz() -> dict[str, str]:
     return {"status": "ok", "version": __version__}
+
+
+@app.get("/api/cloud/selfcheck", response_model=CloudSelfCheck)
+def cloud_selfcheck() -> CloudSelfCheck:
+    """Deployment proof: make one live, metered round-trip to the Qwen Cloud
+    (Alibaba Cloud) inference endpoint and report what was reached. In mock mode
+    this returns a deterministic offline result (mocked=true) and spends nothing.
+    Always 200 — a connectivity failure surfaces as ok=false with `error`."""
+    return run_self_check()
 
 
 @app.get("/api/scenarios", response_model=list[ScenarioInfo])

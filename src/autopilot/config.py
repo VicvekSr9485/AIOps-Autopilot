@@ -60,6 +60,12 @@ class LLMConfig(BaseModel):
     # Hard per-run kill switch: once the session meter reaches this many total
     # tokens, the next complete() refuses BEFORE calling the model. None = off.
     run_token_cap: int | None = None
+    # Resilience for the one external dependency (the Qwen Cloud endpoint).
+    # Every live call gets a wall-clock timeout; transient failures (timeouts,
+    # 429s, 5xx) are retried with exponential backoff up to max_retries. Both
+    # are bounded so a flaky network can never hang or loop a deployed run.
+    request_timeout_s: float = 30.0
+    max_retries: int = 2
 
 
 def load_llm_config() -> LLMConfig:
@@ -73,4 +79,6 @@ def load_llm_config() -> LLMConfig:
         mock_mode=os.environ.get("AUTOPILOT_MOCK_LLM", "0") == "1",
         fixtures_dir=os.environ.get("AUTOPILOT_FIXTURES_DIR"),
         run_token_cap=int(cap_raw) if cap_raw else None,
+        request_timeout_s=float(os.environ.get("AUTOPILOT_LLM_TIMEOUT_S", "30")),
+        max_retries=int(os.environ.get("AUTOPILOT_LLM_MAX_RETRIES", "2")),
     )
