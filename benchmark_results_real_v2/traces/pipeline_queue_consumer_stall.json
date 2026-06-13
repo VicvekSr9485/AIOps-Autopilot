@@ -1,0 +1,191 @@
+{
+  "report": {
+    "incident_id": "inc-bcdd63b3e1b3",
+    "resolved": true,
+    "triage": {
+      "incident_id": "inc-bcdd63b3e1b3",
+      "hypotheses": [
+        {
+          "incident_id": "inc-bcdd63b3e1b3",
+          "cause": "Queue backlog growing while a RUNNING consumer is wedged (not a scale change)",
+          "confidence": 0.85,
+          "evidence": [
+            {
+              "kind": "metric",
+              "pointer": "queue_depth",
+              "excerpt": "first=0 last=5 delta=+5 samples=6 ... first=6 last=8 delta=+2"
+            },
+            {
+              "kind": "metric",
+              "pointer": "jobs_processed",
+              "excerpt": "first=1 last=1 delta=+0 samples=6 ... first=1 last=1 delta=+0"
+            },
+            {
+              "kind": "metric",
+              "pointer": "work_success_total",
+              "excerpt": "first=2 last=7 delta=+5 samples=6 ... first=8 last=10 delta=+2"
+            },
+            {
+              "kind": "log",
+              "pointer": "app",
+              "excerpt": "INFO: 192.168.65.1:22453 - \"GET /healthz HTTP/1.1\" 200 OK"
+            }
+          ],
+          "reasoning_summary": "The queue_depth metric is monotonically increasing while jobs_processed remains completely flat at 1, indicating the consumer is not processing jobs. Meanwhile, work_success_total and requests_total continue to increment and HTTP health checks return 200 OK, proving the application container is still running and accepting requests but the background worker is wedged or deadlocked."
+        },
+        {
+          "incident_id": "inc-bcdd63b3e1b3",
+          "cause": "Queue consumer SCALED TO ZERO replicas (capacity change, not a wedge)",
+          "confidence": 0.3,
+          "evidence": [
+            {
+              "kind": "metric",
+              "pointer": "queue_depth",
+              "excerpt": "first=0 last=5 delta=+5 samples=6"
+            },
+            {
+              "kind": "metric",
+              "pointer": "jobs_processed",
+              "excerpt": "first=1 last=1 delta=+0 samples=6"
+            }
+          ],
+          "reasoning_summary": "The queue is backing up and no jobs are being processed, which could indicate the consumer replicas were scaled to zero. However, this is less likely than a wedged consumer because the application is still actively serving HTTP requests and health checks, implying the pod/container is still running rather than completely terminated."
+        }
+      ],
+      "consulted_runbooks": [
+        "Queue consumer SCALED TO ZERO replicas (capacity change, not a wedge) (score=0.1163): Distinguishing signal: a worker_shutdown (SIGTERM) line then SILENCE \u2014 the consumer container is GONE and its running replica count is ZERO (not merely wedged-but-running).\nRemediation: SCALE the consumer back up to its baseline replica count (scale_service, replicas>=1) \u2014 a RESTART is a NO-OP at zero replicas (no container to restart). Treat the scale-up as a capacity change.\nSymptoms: queue_dept",
+        "Queue backlog growing while a RUNNING consumer is wedged (not a scale change) (score=0.0939): Symptoms: queue_depth grows monotonically; jobs_processed counter stops advancing; user-facing requests and health checks stay green \u2014 a silent backlog with no error logs. The consumer container is STILL RUNNING (its replica count is unchanged) but stuck \u2014 paused, crashed in place, or deadlocked. There is NO worker_shutdown / SIGTERM and NO scale-down event.\nDiagnosis: confirm the worker still has",
+        "Postgres connection slots exhausted / too many clients (score=0.056): Symptoms: health checks report the database component down; application requests fail with 'remaining connection slots are reserved' or 'sorry, too many clients already'; errors appear without a deploy or config change.\nDiagnosis: inspect pg_stat_activity for idle or long-running sessions (state, query_start, usename); compare session count against max_connections; look for batch jobs or leaked po"
+      ],
+      "telemetry_summary": "ALERT: sandbox.app.anomaly_suspected (severity=low, source=sandbox-probe)\n  0/6 health checks failing, 0/6 work requests failing\nMETRICS (30 points, windowed):\n  errors_total: first=0 last=0 delta=+0 samples=6\n  jobs_processed: first=1 last=1 delta=+0 samples=6\n  queue_depth: first=0 last=5 delta=+5 samples=6\n  requests_total: first=2 last=7 delta=+5 samples=6\n  work_success_total: first=2 last=7 delta=+5 samples=6\nLOGS (42 lines -> 42 distinct, top 12 shown):\n  [app] x1: INFO:     127.0.0.1:43822 - \"GET /healthz HTTP/1.1\" 200 OK\n  [app] x1: INFO:     127.0.0.1:58332 - \"GET /healthz HTTP/1.1\" 200 OK\n  [app] x1: INFO:     127.0.0.1:58344 - \"GET /healthz HTTP/1.1\" 200 OK\n  [app] x1: INFO:     192.168.65.1:22453 - \"GET /healthz HTTP/1.1\" 200 OK\n  [app] x1: INFO:     192.168.65.1:22453 - \"GET /metrics HTTP/1.1\" 200 OK\n  [app] x1: INFO:     192.168.65.1:22453 - \"GET /work HTTP/1.1\" 200 OK\n  [app] x1: INFO:     192.168.65.1:25545 - \"GET /healthz HTTP/1.1\" 200 OK\n  [app] x1: INFO:     192.168.65.1:25545 - \"GET /metrics HTTP/1.1\" 200 OK\n  [app] x1: INFO:     192.168.65.1:25545 - \"GET /work HTTP/1.1\" 200 OK\n  [app] x1: INFO:     192.168.65.1:36737 - \"GET /healthz HTTP/1.1\" 200 OK\n  [app] x1: INFO:     192.168.65.1:36737 - \"GET /metrics HTTP/1.1\" 200 OK\n  [app] x1: INFO:     192.168.65.1:36737 - \"GET /work HTTP/1.1\" 200 OK\n  ... 30 more distinct messages omitted",
+      "generated_at": "2026-06-13T02:32:44.879295Z"
+    },
+    "proposal": {
+      "id": "rem-ee084571d873",
+      "incident_id": "inc-bcdd63b3e1b3",
+      "hypothesis_cause": "Queue backlog growing while a RUNNING consumer is wedged (not a scale change)",
+      "steps": [
+        {
+          "order": 1,
+          "action": "restart_service",
+          "target": "worker",
+          "command": null,
+          "expected_effect": "Clears the wedged worker process and revives the stalled queue consumer, allowing it to resume processing the backlog."
+        }
+      ],
+      "rollback_plan": [],
+      "risk_score": 0.1,
+      "blast_radius": "single_service",
+      "remediation_confidence": 0.9,
+      "escalate": false,
+      "requires_approval": true
+    },
+    "gate": {
+      "approved": true,
+      "route": "auto",
+      "proposal": {
+        "id": "rem-ee084571d873",
+        "incident_id": "inc-bcdd63b3e1b3",
+        "hypothesis_cause": "Queue backlog growing while a RUNNING consumer is wedged (not a scale change)",
+        "steps": [
+          {
+            "order": 1,
+            "action": "restart_service",
+            "target": "worker",
+            "command": null,
+            "expected_effect": "Clears the wedged worker process and revives the stalled queue consumer, allowing it to resume processing the backlog."
+          }
+        ],
+        "rollback_plan": [],
+        "risk_score": 0.1,
+        "blast_radius": "single_service",
+        "remediation_confidence": 0.9,
+        "escalate": false,
+        "requires_approval": false
+      },
+      "escalation_reasons": [],
+      "human_action": null,
+      "note": ""
+    },
+    "execution": {
+      "proposal_id": "rem-ee084571d873",
+      "incident_id": "inc-bcdd63b3e1b3",
+      "success": true,
+      "step_outcomes": [
+        {
+          "step_order": 1,
+          "success": true,
+          "output": "restarted sandbox service 'worker'"
+        }
+      ],
+      "started_at": "2026-06-13T02:33:02.801804Z",
+      "finished_at": "2026-06-13T02:33:03.095679Z",
+      "error": null
+    },
+    "verification": {
+      "incident_id": "inc-bcdd63b3e1b3",
+      "resolved": true,
+      "checks": [
+        {
+          "name": "all_probes_healthy",
+          "passed": true,
+          "detail": "0/3 probes failing"
+        },
+        {
+          "name": "no_active_alerts",
+          "passed": true,
+          "detail": "none firing"
+        },
+        {
+          "name": "backlog_draining",
+          "passed": true,
+          "detail": "queue_depth 0->0, jobs_processed delta +2"
+        }
+      ],
+      "verified_at": "2026-06-13T02:33:03.682842Z"
+    },
+    "rolled_back": false,
+    "outcome_recorded": true,
+    "llm": {
+      "calls": 2,
+      "input_tokens": 3437,
+      "output_tokens": 2597,
+      "est_cost_usd": 0.014035,
+      "steps": [
+        "triage.root_cause",
+        "remediation.plan"
+      ]
+    },
+    "stage_seconds": {
+      "triage": 33.2419,
+      "remediation": 17.9219,
+      "execution": 0.2941,
+      "verification": 0.5873
+    }
+  },
+  "llm_records": [
+    {
+      "model": "qwen3.7-max",
+      "role": "reasoning",
+      "step": "triage.root_cause",
+      "input_tokens": 1610,
+      "output_tokens": 1670,
+      "est_cost_usd": 0.008275,
+      "tier": "free",
+      "free_tokens_used": 3280,
+      "voucher_tokens_used": 0
+    },
+    {
+      "model": "qwen3.7-max",
+      "role": "planning",
+      "step": "remediation.plan",
+      "input_tokens": 1827,
+      "output_tokens": 927,
+      "est_cost_usd": 0.00576,
+      "tier": "free",
+      "free_tokens_used": 2754,
+      "voucher_tokens_used": 0
+    }
+  ],
+  "oracle_decisions": []
+}

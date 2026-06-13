@@ -1,0 +1,207 @@
+{
+  "report": {
+    "incident_id": "inc-ab57e1b44dbe",
+    "resolved": true,
+    "triage": {
+      "incident_id": "inc-ab57e1b44dbe",
+      "hypotheses": [
+        {
+          "incident_id": "inc-ab57e1b44dbe",
+          "cause": "Downstream service unresponsive or crashed, causing application requests to time out",
+          "confidence": 0.95,
+          "evidence": [
+            {
+              "kind": "log",
+              "pointer": "log:app",
+              "excerpt": "{\"ts\": \"2026-06-13T02:30:29.459501+00:00\", \"service\": \"app\", \"event\": \"work_failed\", \"reason\": \"downstream_timeout\", \"error\": \"timed out\"}"
+            },
+            {
+              "kind": "log",
+              "pointer": "log:app",
+              "excerpt": "INFO:     192.168.65.1:23502 - \"GET /work HTTP/1.1\" 504 Gateway Timeout"
+            },
+            {
+              "kind": "log",
+              "pointer": "log:downstream",
+              "excerpt": "INFO:     172.25.0.6:46206 - \"GET / HTTP/1.1\" 200 OK (only one entry at 02:30:27, then complete silence)"
+            },
+            {
+              "kind": "metric",
+              "pointer": "metric:errors_total",
+              "excerpt": "errors_total increases continuously while work_success_total remains flat at 1"
+            }
+          ],
+          "reasoning_summary": "The application is consistently returning 504 Gateway Timeout for /work requests and logging 'downstream_timeout' errors. The downstream service successfully processed exactly one request and then stopped emitting logs entirely, strongly indicating it has crashed, hung, or become unreachable, which cascades into application-level work failures."
+        },
+        {
+          "incident_id": "inc-ab57e1b44dbe",
+          "cause": "Network connectivity issue or partition between the app and downstream service",
+          "confidence": 0.4,
+          "evidence": [
+            {
+              "kind": "log",
+              "pointer": "log:app",
+              "excerpt": "\"event\": \"work_failed\", \"reason\": \"downstream_timeout\", \"error\": \"timed out\""
+            },
+            {
+              "kind": "log",
+              "pointer": "log:downstream",
+              "excerpt": "Absence of any downstream logs after the initial successful request"
+            }
+          ],
+          "reasoning_summary": "A network partition or routing issue could prevent the app from reaching the downstream service, resulting in timeouts and a lack of downstream logs. However, a downstream crash or hang is statistically more likely in this sandbox environment given the sudden silence after the first request."
+        }
+      ],
+      "consulted_runbooks": [
+        "Queue consumer SCALED TO ZERO replicas (capacity change, not a wedge) (score=0.1088): Distinguishing signal: a worker_shutdown (SIGTERM) line then SILENCE \u2014 the consumer container is GONE and its running replica count is ZERO (not merely wedged-but-running).\nRemediation: SCALE the consumer back up to its baseline replica count (scale_service, replicas>=1) \u2014 a RESTART is a NO-OP at zero replicas (no container to restart). Treat the scale-up as a capacity change.\nSymptoms: queue_dept",
+        "Queue backlog growing while a RUNNING consumer is wedged (not a scale change) (score=0.0872): Symptoms: queue_depth grows monotonically; jobs_processed counter stops advancing; user-facing requests and health checks stay green \u2014 a silent backlog with no error logs. The consumer container is STILL RUNNING (its replica count is unchanged) but stuck \u2014 paused, crashed in place, or deadlocked. There is NO worker_shutdown / SIGTERM and NO scale-down event.\nDiagnosis: confirm the worker still has",
+        "Config rollout breaks requests AND wedges queue consumers (score=0.0763): Symptoms: work_failed errors naming an invalid setting (e.g. invalid_feature_mode) right after a rollout, while queue_depth sits above zero without draining and jobs_processed stops advancing.\nRemediation: roll the configuration back AND restart the consumer as well \u2014 a consumer that loaded the bad config stays wedged after the rollback, so the backlog will not drain on its own. Verify both the er"
+      ],
+      "telemetry_summary": "ALERT: sandbox.app.work_errors (severity=high, source=sandbox-probe)\n  0/6 health checks failing, 6/6 work requests failing\nMETRICS (30 points, windowed):\n  errors_total: first=1 last=6 delta=+5 samples=6\n  jobs_processed: first=1 last=1 delta=+0 samples=6\n  queue_depth: first=0 last=0 delta=+0 samples=6\n  requests_total: first=2 last=7 delta=+5 samples=6\n  work_success_total: first=1 last=1 delta=+0 samples=6\nLOGS (37 lines -> 32 distinct, top 12 shown):\n  [app] x6: work_failed {\"reason\": \"downstream_timeout\", \"error\": \"timed out\"}\n  [app] x1: INFO:     127.0.0.1:34722 - \"GET /healthz HTTP/1.1\" 200 OK\n  [app] x1: INFO:     127.0.0.1:34738 - \"GET /healthz HTTP/1.1\" 200 OK\n  [app] x1: INFO:     127.0.0.1:49724 - \"GET /healthz HTTP/1.1\" 200 OK\n  [app] x1: INFO:     127.0.0.1:49736 - \"GET /healthz HTTP/1.1\" 200 OK\n  [app] x1: INFO:     127.0.0.1:49752 - \"GET /healthz HTTP/1.1\" 200 OK\n  [app] x1: INFO:     127.0.0.1:49762 - \"GET /healthz HTTP/1.1\" 200 OK\n  [app] x1: INFO:     127.0.0.1:49770 - \"GET /healthz HTTP/1.1\" 200 OK\n  [app] x1: INFO:     192.168.65.1:22850 - \"GET /healthz HTTP/1.1\" 200 OK\n  [app] x1: INFO:     192.168.65.1:22850 - \"GET /metrics HTTP/1.1\" 200 OK\n  [app] x1: INFO:     192.168.65.1:22850 - \"GET /work HTTP/1.1\" 504 Gateway Timeout\n  [app] x1: INFO:     192.168.65.1:23502 - \"GET /healthz HTTP/1.1\" 200 OK\n  ... 20 more distinct messages omitted",
+      "generated_at": "2026-06-13T02:31:26.135424Z"
+    },
+    "proposal": {
+      "id": "rem-8317da2c2b1b",
+      "incident_id": "inc-ab57e1b44dbe",
+      "hypothesis_cause": "Downstream service unresponsive or crashed, causing application requests to time out",
+      "steps": [
+        {
+          "order": 1,
+          "action": "restart_service",
+          "target": "downstream",
+          "command": null,
+          "expected_effect": "Downstream service restarts, clearing the hung or crashed state, allowing app to successfully process /work requests without downstream_timeout errors."
+        }
+      ],
+      "rollback_plan": [
+        {
+          "order": 1,
+          "action": "restart_service",
+          "target": "downstream",
+          "command": null,
+          "expected_effect": "Restarts downstream again if the first restart resulted in an unstable state or failed to bind ports."
+        }
+      ],
+      "risk_score": 0.1,
+      "blast_radius": "single_service",
+      "remediation_confidence": 0.95,
+      "escalate": false,
+      "requires_approval": true
+    },
+    "gate": {
+      "approved": true,
+      "route": "auto",
+      "proposal": {
+        "id": "rem-8317da2c2b1b",
+        "incident_id": "inc-ab57e1b44dbe",
+        "hypothesis_cause": "Downstream service unresponsive or crashed, causing application requests to time out",
+        "steps": [
+          {
+            "order": 1,
+            "action": "restart_service",
+            "target": "downstream",
+            "command": null,
+            "expected_effect": "Downstream service restarts, clearing the hung or crashed state, allowing app to successfully process /work requests without downstream_timeout errors."
+          }
+        ],
+        "rollback_plan": [
+          {
+            "order": 1,
+            "action": "restart_service",
+            "target": "downstream",
+            "command": null,
+            "expected_effect": "Restarts downstream again if the first restart resulted in an unstable state or failed to bind ports."
+          }
+        ],
+        "risk_score": 0.1,
+        "blast_radius": "single_service",
+        "remediation_confidence": 0.95,
+        "escalate": false,
+        "requires_approval": false
+      },
+      "escalation_reasons": [],
+      "human_action": null,
+      "note": ""
+    },
+    "execution": {
+      "proposal_id": "rem-8317da2c2b1b",
+      "incident_id": "inc-ab57e1b44dbe",
+      "success": true,
+      "step_outcomes": [
+        {
+          "step_order": 1,
+          "success": true,
+          "output": "restarted sandbox service 'downstream'"
+        }
+      ],
+      "started_at": "2026-06-13T02:31:49.279364Z",
+      "finished_at": "2026-06-13T02:31:49.733997Z",
+      "error": null
+    },
+    "verification": {
+      "incident_id": "inc-ab57e1b44dbe",
+      "resolved": true,
+      "checks": [
+        {
+          "name": "all_probes_healthy",
+          "passed": true,
+          "detail": "0/3 probes failing"
+        },
+        {
+          "name": "no_active_alerts",
+          "passed": true,
+          "detail": "none firing"
+        },
+        {
+          "name": "backlog_draining",
+          "passed": true,
+          "detail": "queue_depth 0->0, jobs_processed delta +2"
+        }
+      ],
+      "verified_at": "2026-06-13T02:31:52.529077Z"
+    },
+    "rolled_back": false,
+    "outcome_recorded": true,
+    "llm": {
+      "calls": 2,
+      "input_tokens": 7165,
+      "output_tokens": 3020,
+      "est_cost_usd": 0.020282,
+      "steps": [
+        "triage.root_cause",
+        "remediation.plan"
+      ]
+    },
+    "stage_seconds": {
+      "triage": 43.6146,
+      "remediation": 23.1428,
+      "execution": 0.455,
+      "verification": 2.7952
+    }
+  },
+  "llm_records": [
+    {
+      "model": "qwen3.7-max",
+      "role": "reasoning",
+      "step": "triage.root_cause",
+      "input_tokens": 5310,
+      "output_tokens": 1799,
+      "est_cost_usd": 0.013384,
+      "tier": "free",
+      "free_tokens_used": 7109,
+      "voucher_tokens_used": 0
+    },
+    {
+      "model": "qwen3.7-max",
+      "role": "planning",
+      "step": "remediation.plan",
+      "input_tokens": 1855,
+      "output_tokens": 1221,
+      "est_cost_usd": 0.006898,
+      "tier": "free",
+      "free_tokens_used": 3076,
+      "voucher_tokens_used": 0
+    }
+  ],
+  "oracle_decisions": []
+}

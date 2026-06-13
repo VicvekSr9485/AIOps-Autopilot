@@ -12,12 +12,17 @@ planner must never depend on the hypothesis prose alone, and retrieved runbook
 text is explicitly labeled as reference material that may be irrelevant, so it
 cannot outweigh primary evidence.
 
-Uses the `default` model (qwen3.7-plus) — the reasoning tier belongs to triage
-alone. Server-side discipline mirrors the rest of the pipeline: incident_id and
-hypothesis_cause are injected, action/target vocabularies are closed enums, a
-risk floor is applied when destructive steps are present (the model's optimism
+Uses the `planning` role (qwen3.7-max). The real-model benchmark localized the
+pipeline's remediation losses to a too-cheap planner; planning now runs on the
+max tier (see config.MODEL_BY_ROLE / Key Decisions). Server-side discipline
+mirrors the rest of the pipeline: incident_id and hypothesis_cause are injected,
+action/target vocabularies are closed enums, config VALUES are grounded to the
+app's known-good set (a hallucinated feature_mode can never reach the executor),
+a risk floor is applied when destructive steps are present (the model's optimism
 is not trusted), and requires_approval starts True — only the HITL gate may
-clear it.
+clear it. The planner may also DECLINE (escalate=True) when no in-vocabulary fix
+exists or its remediation confidence is low — that routes to a human, and it is
+never a free safe pass (escalating a fixable fault scores as a miss downstream).
 """
 
 from __future__ import annotations
@@ -47,6 +52,15 @@ ActionName = Literal["restart_service", "scale_service", "apply_config", "rollba
 DESTRUCTIVE_ACTIONS = frozenset({"scale_service", "apply_config"})
 DESTRUCTIVE_RISK_FLOOR = 0.6
 
+# The app's only valid feature_mode (sandbox/app/config.default.json + the
+# app's own validation: it rejects anything != "standard"). This is the app's
+# documented config schema — operational knowledge, NOT fault ground truth.
+# Grounding apply_config against it kills the "hallucinated value" failure
+# class (the real run's planner proposed feature_mode='stable'): any other
+# value collapses to a `rollback` (restore the canonical config), which is
+# what the operator actually wants and needs no guessed value.
+VALID_FEATURE_MODES = frozenset({"standard"})
+
 
 class _LLMPlanStep(BaseModel):
     model_config = ConfigDict(extra="ignore")
@@ -60,30 +74,67 @@ class _LLMPlanStep(BaseModel):
 class _LLMPlan(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
-    steps: list[_LLMPlanStep] = Field(min_length=1, max_length=3)
+    steps: list[_LLMPlanStep] = Field(default_factory=list, max_length=3)
     rollback_plan: list[_LLMPlanStep] = Field(default_factory=list, max_length=3)
     risk_score: float = Field(ge=0.0, le=1.0)
     blast_radius: Literal["single_service", "multiple_services", "stack_wide"]
+    # The planner's confidence in this remediation specifically. The gate gates
+    # on this — a confident diagnosis with a shaky fix still reaches a human.
+    remediation_confidence: float = Field(default=1.0, ge=0.0, le=1.0)
+    # Decline to act: no fix is expressible in the action vocabulary above (e.g.
+    # the fix is "rotate a credential" / "free DB slots by hand"), or confidence
+    # is too low. When true, steps may be empty and the gate escalates.
+    escalate: bool = False
 
 
 _SYSTEM_PROMPT = (
     "You are an SRE remediation planner for a sandboxed compose stack. Given a "
     "root-cause hypothesis and runbook guidance, plan the smallest remediation.\n"
     "Available actions (the ONLY ones that exist):\n"
-    "- restart_service: params {} — restart one service\n"
-    "- scale_service: params {\"replicas\": 0..3} — scale a service (0 stops it)\n"
-    "- apply_config: params = partial app config (keys: feature_mode, "
-    "downstream_url, downstream_timeout_s); always targets the app service\n"
-    "- rollback: params {} — restore the canonical app config; targets app\n"
+    "- restart_service: params {} — restart ONE specific service (you choose the "
+    "target). Restarting a service drops its in-flight state: restart `db` to "
+    "clear stuck/idle DB sessions holding connection slots; restart `worker` to "
+    "revive a stalled queue consumer; restart `downstream` to recover a hung "
+    "dependency; restart `app` only for app-process issues. Pick the target that "
+    "OWNS the failing component — do not default to `app`.\n"
+    "- scale_service: params {\"replicas\": 0..3} — scale a service (0 stops it, "
+    "1 brings a scaled-to-zero service back). A restart is a NO-OP at 0 replicas.\n"
+    "- apply_config: params = partial app config; the ONLY valid feature_mode is "
+    "\"standard\" (the app rejects any other value). Prefer `rollback` over "
+    "apply_config to undo a bad config rollout — do NOT invent a config value.\n"
+    "- rollback: params {} — restore the canonical (known-good) app config and "
+    "restart app; targets app. Use this to revert ANY bad config rollout.\n"
     "Services: app, worker, downstream, db, queue.\n"
+    "If NO action above can restore health (e.g. the fix is to rotate a "
+    "credential, free DB slots by hand, or anything outside this vocabulary), or "
+    "you are not confident enough to act, set escalate=true with empty steps and "
+    "a low remediation_confidence — a human will handle it. Do NOT fabricate a "
+    "plausible-looking action just to fill the field.\n"
     "Respond with STRICT JSON only — no prose, no markdown — matching:\n"
     '{"steps": [{"action": str, "target": str, "params": object, '
     '"expected_effect": str}], "rollback_plan": [same shape], '
     '"risk_score": float 0..1, "blast_radius": "single_service"|'
-    '"multiple_services"|"stack_wide"}\n'
-    "1-3 steps, minimal blast radius. ALWAYS include a rollback_plan that "
-    "restores the pre-remediation state."
+    '"multiple_services"|"stack_wide", "remediation_confidence": float 0..1, '
+    '"escalate": bool}\n'
+    "1-3 steps (or 0 with escalate=true), minimal blast radius. When you act, "
+    "ALWAYS include a rollback_plan that restores the pre-remediation state."
 )
+
+
+def _ground_step(s: _LLMPlanStep) -> _LLMPlanStep:
+    """Ground model-supplied config VALUES against the app's known-good schema.
+    An apply_config naming a feature_mode the app would reject (anything but
+    'standard') is collapsed to a `rollback` — the planner cannot push a
+    hallucinated value (e.g. 'stable') through to the executor."""
+    if s.action != "apply_config":
+        return s
+    mode = s.params.get("feature_mode")
+    if mode is not None and mode not in VALID_FEATURE_MODES:
+        log.info("planner_grounded_config", step=STEP, rejected_feature_mode=mode)
+        return _LLMPlanStep(action="rollback", target="app", params={},
+                            expected_effect="restore canonical config "
+                            f"(grounded: '{mode}' is not a valid feature_mode)")
+    return s
 
 
 def _to_step(order: int, s: _LLMPlanStep) -> RemediationStep:
@@ -139,29 +190,38 @@ def plan_remediation(
         ]
         try:
             plan, tokens_spent = complete_structured(
-                client, "default", messages, _LLMPlan,
+                client, "planning", messages, _LLMPlan,
                 step=STEP, max_attempts=max_attempts, token_cap=token_cap,
             )
         except StructuredOutputError as e:
             raise PlanningError(str(e)) from None
 
+        grounded = [_ground_step(s) for s in plan.steps]
+        # A planner that declined, or returned no actionable step, is an
+        # escalation — never an empty proposal that the executor would no-op.
+        escalate = plan.escalate or not grounded
+
         risk = plan.risk_score
-        if any(s.action in DESTRUCTIVE_ACTIONS for s in plan.steps):
+        if any(s.action in DESTRUCTIVE_ACTIONS for s in grounded):
             risk = max(risk, DESTRUCTIVE_RISK_FLOOR)  # don't trust model optimism
 
         proposal = RemediationProposal(
             incident_id=triage.incident_id,  # injected, never model-supplied
             hypothesis_cause=top.cause,
-            steps=[_to_step(i + 1, s) for i, s in enumerate(plan.steps)],
+            steps=[] if escalate else [_to_step(i + 1, s) for i, s in enumerate(grounded)],
             rollback_plan=[_to_step(i + 1, s) for i, s in enumerate(plan.rollback_plan)],
             risk_score=risk,
             blast_radius=plan.blast_radius,
+            remediation_confidence=plan.remediation_confidence,
+            escalate=escalate,
             requires_approval=True,  # only the HITL gate may clear this
         )
         log.info(
             "remediation_planned", step=STEP, incident_id=triage.incident_id,
             steps=len(proposal.steps), rollback_steps=len(proposal.rollback_plan),
             risk_score=proposal.risk_score, blast_radius=proposal.blast_radius,
+            remediation_confidence=proposal.remediation_confidence,
+            escalate=proposal.escalate,
             destructive=bool(destructive_steps(proposal)), tokens_spent=tokens_spent,
         )
         return proposal

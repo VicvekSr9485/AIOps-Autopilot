@@ -29,15 +29,19 @@ from test_pipeline_triage import ScriptedClient, valid_triage_json
 pytestmark = pytest.mark.anyio
 
 
-def plan_json(action="restart_service", target="worker", params=None, risk=0.2):
-    step = {"action": action, "target": target, "params": params or {},
-            "expected_effect": "service converges to healthy"}
+def plan_json(action="restart_service", target="worker", params=None, risk=0.2,
+              remediation_confidence=0.9, escalate=False):
+    steps = [] if escalate else [{
+        "action": action, "target": target, "params": params or {},
+        "expected_effect": "service converges to healthy"}]
     return json.dumps({
-        "steps": [step],
+        "steps": steps,
         "rollback_plan": [{"action": "restart_service", "target": "app",
                            "params": {}, "expected_effect": "restore baseline"}],
         "risk_score": risk,
         "blast_radius": "single_service",
+        "remediation_confidence": remediation_confidence,
+        "escalate": escalate,
     })
 
 
@@ -104,9 +108,9 @@ async def test_planner_is_structurally_toolless():
     assert RemediationProposal.model_validate(proposal.model_dump())
     assert proposal.requires_approval  # only the gate may clear this
     assert proposal.incident_id == world.incident.id
-    # planner ran on the default tier, triage on reasoning — and nothing else
-    assert [r.role for r in client.meter.records] == ["reasoning", "default"]
-    assert client.meter.records[1].model == "qwen3.7-plus"
+    # planner now runs on the max tier (role "planning"), triage on "reasoning"
+    assert [r.role for r in client.meter.records] == ["reasoning", "planning"]
+    assert client.meter.records[1].model == "qwen3.7-max"
     assert client.meter.records[1].step == "remediation.plan"
     # runbook guidance flowed forward from triage instead of being re-fetched
     assert "RUNBOOK GUIDANCE" in client.prompts[1][1]["content"]
@@ -225,8 +229,10 @@ async def test_destructive_proposals_always_escalate(action, params):
 async def test_low_confidence_escalates_and_human_approval_executes():
     world = World("downstream_timeout")
     client = ScriptedClient([
-        valid_triage_json().replace("0.85", "0.55"),  # below the 0.75 threshold
-        plan_json(target="downstream"),
+        valid_triage_json(),  # diagnosis is confident...
+        # ...but the planner is unsure of the FIX (gate gates on this, not on
+        # diagnosis confidence): remediation_confidence below the 0.75 threshold.
+        plan_json(target="downstream", remediation_confidence=0.55),
     ])
     approver = StaticApprover("approve", note="looks right, go")
 
@@ -234,7 +240,7 @@ async def test_low_confidence_escalates_and_human_approval_executes():
                                 approver, world.context, verify_interval_s=0.0)
 
     assert report.gate.route == "human" and report.gate.approved
-    assert any("confidence" in r for r in report.gate.escalation_reasons)
+    assert any("remediation confidence" in r for r in report.gate.escalation_reasons)
     assert report.execution and report.execution.success  # approval clears the flag
     assert ("restart", "downstream") in world.ctrl.calls
 
@@ -303,8 +309,9 @@ async def test_gate_threshold_boundaries_auto_approve():
 async def test_edit_decision_executes_edited_proposal():
     world = World("downstream_timeout")
     client = ScriptedClient([
-        valid_triage_json().replace("0.85", "0.5"),
-        plan_json(target="db"),  # the "wrong" plan the human corrects
+        valid_triage_json(),
+        # low remediation confidence forces the gate to a human, who edits
+        plan_json(target="db", remediation_confidence=0.5),  # the "wrong" plan
     ])
     edited = RemediationProposal(
         incident_id=world.incident.id, hypothesis_cause="downstream stopped responding",
@@ -333,7 +340,8 @@ async def test_end_to_end_metering_per_incident():
     assert report.llm.input_tokens > 0 and report.llm.output_tokens > 0
     assert report.llm.est_cost_usd > 0
     models = [r.model for r in client.meter.records]
-    assert models == ["qwen3.7-max", "qwen3.7-max", "qwen3.7-plus"]
+    # triage retry + triage ok (reasoning/max), then planner (planning/max)
+    assert models == ["qwen3.7-max", "qwen3.7-max", "qwen3.7-max"]
 
 
 async def test_record_outcome_is_idempotent_across_reruns():

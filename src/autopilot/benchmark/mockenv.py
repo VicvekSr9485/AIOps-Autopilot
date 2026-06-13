@@ -205,6 +205,14 @@ _PLANS: dict[str, list[dict]] = {
     "worker_scaled_to_zero": [{"action": "restart_service", "target": "worker"}],
 }
 
+# Faults whose symptoms a competent planner recognizes as having NO fix in the
+# action vocabulary (the remediation is to rotate a credential, outside this
+# stack's tools). The planner DECLINES (escalate) rather than fabricate an
+# action — inferred from the observable 'password authentication failed' /
+# 'credential' signal, never from ground truth. The baseline has no escalate
+# path, so it still acts (and false-remediates) here.
+_PLANNER_DECLINES: frozenset[str] = frozenset({"expired_credential"})
+
 # Operational knowledge that only arrives via retrieved runbooks: when the
 # marker phrase from the matching runbook is present in the prompt's runbook
 # section, the plan is refined. Models a planner following runbook guidance —
@@ -298,12 +306,24 @@ def _plan_steps(fault: str | None, runbook_text: str = "") -> list[dict]:
 
 
 def _plan_json(fault: str | None, runbook_text: str = "") -> str:
+    if fault in _PLANNER_DECLINES:
+        # No in-vocabulary fix (credential rotation) — decline and escalate.
+        return json.dumps({
+            "steps": [],
+            "rollback_plan": [],
+            "risk_score": 0.1,
+            "blast_radius": "single_service",
+            "remediation_confidence": 0.2,
+            "escalate": True,
+        })
     return json.dumps({
         "steps": _plan_steps(fault, runbook_text),
         "rollback_plan": [{"action": "rollback", "target": "app", "params": {},
                            "expected_effect": "restore canonical config"}],
         "risk_score": 0.2,
         "blast_radius": "single_service",
+        "remediation_confidence": 0.9,
+        "escalate": False,
     })
 
 

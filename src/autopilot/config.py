@@ -13,12 +13,19 @@ from pydantic import BaseModel, Field
 
 DASHSCOPE_BASE_URL_DEFAULT = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
 
-Role = Literal["reasoning", "default"]
+Role = Literal["reasoning", "planning", "default"]
 
-# "reasoning" is reserved for the root-cause analysis step ONLY; everything else
-# (triage, summarization, remediation drafting, verification) uses "default".
+# Model tiering by role. "reasoning" (root-cause analysis) and "planning"
+# (remediation planning) both run on the max tier — the real-model benchmark
+# (REPORT-real.md) localized the pipeline's remediation losses to a too-cheap
+# planner (wrong targets, hallucinated config values, sibling-runbook
+# confusion), so the planner is promoted to qwen3.7-max. Everything else
+# (triage enrichment is toolless/deterministic, summarization, verification)
+# stays on "default". The role->model SET is still {max, plus}, so the
+# benchmark's ModelConsistencyError check (constant pair within a run) holds.
 MODEL_BY_ROLE: dict[Role, str] = {
     "reasoning": "qwen3.7-max",
+    "planning": "qwen3.7-max",
     "default": "qwen3.7-plus",
 }
 

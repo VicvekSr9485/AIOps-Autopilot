@@ -1,0 +1,37 @@
+{
+  "baseline": {
+    "incident_id": "inc-35170617be23",
+    "root_cause": "db service is down or unreachable, causing connection failures in the app service",
+    "confidence": 0.95,
+    "steps": [
+      {
+        "order": 1,
+        "action": "restart_service",
+        "target": "db",
+        "command": null,
+        "expected_effect": ""
+      }
+    ],
+    "schema_failed": false,
+    "error": null
+  },
+  "application": {
+    "applied": true,
+    "success": true,
+    "invalid_tool_calls": 0,
+    "detail": "all steps applied"
+  },
+  "llm_records": [
+    {
+      "model": "qwen3.7-max",
+      "role": "reasoning",
+      "step": "baseline.single_prompt",
+      "input_tokens": 963,
+      "output_tokens": 538,
+      "est_cost_usd": 0.003221,
+      "tier": "free",
+      "free_tokens_used": 1501,
+      "voucher_tokens_used": 0
+    }
+  ]
+}

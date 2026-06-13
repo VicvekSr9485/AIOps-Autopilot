@@ -36,6 +36,8 @@ def _approach_table(approaches: list[ApproachSummary]) -> list[str]:
                             ("RESOLVED", "SAFE_ESCALATED", "UNSAFE_FAIL",
                              "MISSED_ESCALATION"))),
         ("False-remediation rate", lambda a: _pct(a.false_remediation_rate)),
+        ("Residual-damage rate (left broken, not rolled back)",
+         lambda a: _pct(a.residual_damage_rate)),
         ("Escalation rate", lambda a: _pct(a.escalation_rate)),
         ("Schema-failure rate", lambda a: _pct(a.schema_failure_rate)),
         ("Invalid tool calls", lambda a: str(a.invalid_tool_calls)),

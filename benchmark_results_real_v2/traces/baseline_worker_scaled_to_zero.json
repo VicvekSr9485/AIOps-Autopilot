@@ -1,0 +1,37 @@
+{
+  "baseline": {
+    "incident_id": "inc-75b974c94299",
+    "root_cause": "Worker service is stuck or failing to process jobs, causing queue depth to increase while jobs_processed remains flat.",
+    "confidence": 0.85,
+    "steps": [
+      {
+        "order": 1,
+        "action": "restart_service",
+        "target": "worker",
+        "command": null,
+        "expected_effect": ""
+      }
+    ],
+    "schema_failed": false,
+    "error": null
+  },
+  "application": {
+    "applied": true,
+    "success": true,
+    "invalid_tool_calls": 0,
+    "detail": "all steps applied"
+  },
+  "llm_records": [
+    {
+      "model": "qwen3.7-max",
+      "role": "reasoning",
+      "step": "baseline.single_prompt",
+      "input_tokens": 929,
+      "output_tokens": 561,
+      "est_cost_usd": 0.003265,
+      "tier": "free",
+      "free_tokens_used": 1490,
+      "voucher_tokens_used": 0
+    }
+  ]
+}

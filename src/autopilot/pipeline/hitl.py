@@ -1,9 +1,17 @@
 """HITL gate: the safety valve between a proposal and the executor.
 
-Routing: confidence >= threshold AND risk <= threshold -> auto-approve;
-anything else escalates to a human. Destructive actions ALWAYS escalate, no
-matter how confident the model is — destructiveness is classified server-side
-(remediation.DESTRUCTIVE_ACTIONS), never taken from the model.
+Routing: REMEDIATION confidence >= threshold AND risk <= threshold ->
+auto-approve; anything else escalates to a human. The gate evaluates the
+remediation's appropriateness — its risk and the planner's confidence in the
+FIX (proposal.remediation_confidence) — not the diagnosis confidence: a
+correct root cause with a shaky/uncertain remediation must still reach a human.
+(The real-model benchmark found diagnosis confidence sat at 0.85–0.98 on every
+fault, so a diagnosis-confidence gate never fired and was effectively
+destructiveness-only.) Destructive actions ALWAYS escalate, no matter how
+confident the model is — destructiveness is classified server-side
+(remediation.DESTRUCTIVE_ACTIONS), never taken from the model. A planner that
+DECLINED (proposal.escalate) always escalates too: declining is routed to a
+human, never auto-approved.
 
 The human is behind the Approver protocol so benchmarks auto-answer it
 (StaticApprover) and the API can put a real user behind the same interface.
@@ -79,11 +87,16 @@ def hitl_gate(
 ) -> GateOutcome:
     with span("hitl", incident_id=proposal.incident_id):
         reasons: list[str] = []
+        if proposal.escalate:
+            reasons.append(
+                "planner declined to act (no safe in-vocabulary remediation)"
+            )
         for desc in destructive_steps(proposal):
             reasons.append(f"destructive action always escalates ({desc})")
-        if hypothesis.confidence < confidence_threshold:
+        if proposal.remediation_confidence < confidence_threshold:
             reasons.append(
-                f"confidence {hypothesis.confidence:.2f} < {confidence_threshold:.2f}"
+                f"remediation confidence {proposal.remediation_confidence:.2f} "
+                f"< {confidence_threshold:.2f}"
             )
         if proposal.risk_score > risk_threshold:
             reasons.append(
@@ -97,7 +110,9 @@ def hitl_gate(
             )
             log.info("hitl_auto_approved", step="hitl",
                      incident_id=proposal.incident_id,
-                     confidence=hypothesis.confidence, risk=proposal.risk_score)
+                     remediation_confidence=proposal.remediation_confidence,
+                     diagnosis_confidence=hypothesis.confidence,
+                     risk=proposal.risk_score)
             return outcome
 
         request = ApprovalRequest(

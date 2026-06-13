@@ -48,7 +48,10 @@ class ScenarioRunner:
             if i < self.probe_count - 1:
                 time.sleep(self.probe_interval_s)
 
-        log_text = self.ctrl.logs(since=capture_start)
+        # redact_capture models degraded alert-time observability (default
+        # identity); the controller's live logs() stay untouched, so detail it
+        # strips remains reachable via a telemetry query during triage.
+        log_text = fault.redact_capture(self.ctrl.logs(since=capture_start))
         incident = build_incident(log_text, snapshots, incident_id=incident_id)
         log.info(
             "scenario_captured", step="harness", fault_id=fault_id, incident_id=incident.id

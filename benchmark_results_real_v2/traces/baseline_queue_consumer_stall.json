@@ -1,0 +1,37 @@
+{
+  "baseline": {
+    "incident_id": "inc-fb404ec57840",
+    "root_cause": "Worker service is not processing jobs, causing queue depth to increase while jobs_processed remains flat despite successful work requests enqueuing jobs.",
+    "confidence": 0.9,
+    "steps": [
+      {
+        "order": 1,
+        "action": "restart_service",
+        "target": "worker",
+        "command": null,
+        "expected_effect": ""
+      }
+    ],
+    "schema_failed": false,
+    "error": null
+  },
+  "application": {
+    "applied": true,
+    "success": true,
+    "invalid_tool_calls": 0,
+    "detail": "all steps applied"
+  },
+  "llm_records": [
+    {
+      "model": "qwen3.7-max",
+      "role": "reasoning",
+      "step": "baseline.single_prompt",
+      "input_tokens": 927,
+      "output_tokens": 696,
+      "est_cost_usd": 0.003769,
+      "tier": "free",
+      "free_tokens_used": 1623,
+      "voucher_tokens_used": 0
+    }
+  ]
+}

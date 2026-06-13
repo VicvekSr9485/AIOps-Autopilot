@@ -1,0 +1,37 @@
+{
+  "baseline": {
+    "incident_id": "inc-213c25d4b86c",
+    "root_cause": "Database connection limit reached, causing connection refusals for non-superuser roles.",
+    "confidence": 0.95,
+    "steps": [
+      {
+        "order": 1,
+        "action": "restart_service",
+        "target": "db",
+        "command": null,
+        "expected_effect": ""
+      }
+    ],
+    "schema_failed": false,
+    "error": null
+  },
+  "application": {
+    "applied": true,
+    "success": true,
+    "invalid_tool_calls": 0,
+    "detail": "all steps applied"
+  },
+  "llm_records": [
+    {
+      "model": "qwen3.7-max",
+      "role": "reasoning",
+      "step": "baseline.single_prompt",
+      "input_tokens": 974,
+      "output_tokens": 706,
+      "est_cost_usd": 0.003865,
+      "tier": "free",
+      "free_tokens_used": 1680,
+      "voucher_tokens_used": 0
+    }
+  ]
+}

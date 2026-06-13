@@ -1,0 +1,220 @@
+{
+  "report": {
+    "incident_id": "inc-166ff5e86c29",
+    "resolved": true,
+    "triage": {
+      "incident_id": "inc-166ff5e86c29",
+      "hypotheses": [
+        {
+          "incident_id": "inc-166ff5e86c29",
+          "cause": "Queue backlog growing while a RUNNING consumer is wedged (not a scale change)",
+          "confidence": 0.95,
+          "evidence": [
+            {
+              "kind": "metric",
+              "pointer": "metric:queue_depth",
+              "excerpt": "queue_depth increases monotonically from 0 to 8 across samples"
+            },
+            {
+              "kind": "metric",
+              "pointer": "metric:jobs_processed",
+              "excerpt": "jobs_processed remains stuck at 1 and does not advance"
+            },
+            {
+              "kind": "log",
+              "pointer": "log:worker",
+              "excerpt": "Only one job_processed event logged at 02:33:51, followed by complete silence"
+            },
+            {
+              "kind": "log",
+              "pointer": "log:app",
+              "excerpt": "App continues to log work_done events and return 200 OK for /healthz and /work requests"
+            }
+          ],
+          "reasoning_summary": "The queue depth is growing monotonically while the jobs_processed counter is stuck at 1. The application remains healthy, successfully accepting requests and enqueuing work (work_done events), but the worker has stopped processing jobs after the first one. There are no worker_shutdown or SIGTERM logs to indicate a scale-to-zero event, strongly pointing to a wedged or deadlocked consumer container that is still running but stuck."
+        },
+        {
+          "incident_id": "inc-166ff5e86c29",
+          "cause": "Queue consumer SCALED TO ZERO replicas",
+          "confidence": 0.2,
+          "evidence": [
+            {
+              "kind": "metric",
+              "pointer": "metric:jobs_processed",
+              "excerpt": "jobs_processed remains stuck at 1"
+            },
+            {
+              "kind": "metric",
+              "pointer": "metric:queue_depth",
+              "excerpt": "queue_depth increases monotonically"
+            }
+          ],
+          "reasoning_summary": "While the queue is backing up and jobs are not being processed, which could indicate the worker is gone, there is no evidence of a worker_shutdown or SIGTERM signal in the logs. The absence of scale-down telemetry makes this less likely than a wedged consumer."
+        },
+        {
+          "incident_id": "inc-166ff5e86c29",
+          "cause": "Postgres connection slots exhausted / too many clients",
+          "confidence": 0.05,
+          "evidence": [
+            {
+              "kind": "log",
+              "pointer": "log:db",
+              "excerpt": "Live log groups show [db] x13, [db] x2: GRANT, [db] x2: done"
+            }
+          ],
+          "reasoning_summary": "Database logs are present but there are no errors related to connection limits, and application health checks remain green with 0 errors. This does not match the symptoms of exhausted connection slots."
+        }
+      ],
+      "consulted_runbooks": [
+        "Queue consumer SCALED TO ZERO replicas (capacity change, not a wedge) (score=0.1163): Distinguishing signal: a worker_shutdown (SIGTERM) line then SILENCE \u2014 the consumer container is GONE and its running replica count is ZERO (not merely wedged-but-running).\nRemediation: SCALE the consumer back up to its baseline replica count (scale_service, replicas>=1) \u2014 a RESTART is a NO-OP at zero replicas (no container to restart). Treat the scale-up as a capacity change.\nSymptoms: queue_dept",
+        "Queue backlog growing while a RUNNING consumer is wedged (not a scale change) (score=0.0939): Symptoms: queue_depth grows monotonically; jobs_processed counter stops advancing; user-facing requests and health checks stay green \u2014 a silent backlog with no error logs. The consumer container is STILL RUNNING (its replica count is unchanged) but stuck \u2014 paused, crashed in place, or deadlocked. There is NO worker_shutdown / SIGTERM and NO scale-down event.\nDiagnosis: confirm the worker still has",
+        "Postgres connection slots exhausted / too many clients (score=0.056): Symptoms: health checks report the database component down; application requests fail with 'remaining connection slots are reserved' or 'sorry, too many clients already'; errors appear without a deploy or config change.\nDiagnosis: inspect pg_stat_activity for idle or long-running sessions (state, query_start, usename); compare session count against max_connections; look for batch jobs or leaked po"
+      ],
+      "telemetry_summary": "ALERT: sandbox.app.anomaly_suspected (severity=low, source=sandbox-probe)\n  0/6 health checks failing, 0/6 work requests failing\nMETRICS (30 points, windowed):\n  errors_total: first=0 last=0 delta=+0 samples=6\n  jobs_processed: first=1 last=1 delta=+0 samples=6\n  queue_depth: first=0 last=5 delta=+5 samples=6\n  requests_total: first=2 last=7 delta=+5 samples=6\n  work_success_total: first=2 last=7 delta=+5 samples=6\nLOGS (42 lines -> 42 distinct, top 12 shown):\n  [app] x1: INFO:     127.0.0.1:45252 - \"GET /healthz HTTP/1.1\" 200 OK\n  [app] x1: INFO:     127.0.0.1:45268 - \"GET /healthz HTTP/1.1\" 200 OK\n  [app] x1: INFO:     127.0.0.1:45284 - \"GET /healthz HTTP/1.1\" 200 OK\n  [app] x1: INFO:     192.168.65.1:22588 - \"GET /healthz HTTP/1.1\" 200 OK\n  [app] x1: INFO:     192.168.65.1:22588 - \"GET /metrics HTTP/1.1\" 200 OK\n  [app] x1: INFO:     192.168.65.1:22588 - \"GET /work HTTP/1.1\" 200 OK\n  [app] x1: INFO:     192.168.65.1:31783 - \"GET /healthz HTTP/1.1\" 200 OK\n  [app] x1: INFO:     192.168.65.1:31783 - \"GET /metrics HTTP/1.1\" 200 OK\n  [app] x1: INFO:     192.168.65.1:31783 - \"GET /work HTTP/1.1\" 200 OK\n  [app] x1: INFO:     192.168.65.1:33375 - \"GET /healthz HTTP/1.1\" 200 OK\n  [app] x1: INFO:     192.168.65.1:33375 - \"GET /metrics HTTP/1.1\" 200 OK\n  [app] x1: INFO:     192.168.65.1:33375 - \"GET /work HTTP/1.1\" 200 OK\n  ... 30 more distinct messages omitted",
+      "generated_at": "2026-06-13T02:34:43.356874Z"
+    },
+    "proposal": {
+      "id": "rem-66d9ebd6e8c5",
+      "incident_id": "inc-166ff5e86c29",
+      "hypothesis_cause": "Queue backlog growing while a RUNNING consumer is wedged (not a scale change)",
+      "steps": [
+        {
+          "order": 1,
+          "action": "restart_service",
+          "target": "worker",
+          "command": null,
+          "expected_effect": "Clears the wedged state of the worker container, allowing it to resume processing jobs from the queue and reducing the queue depth."
+        }
+      ],
+      "rollback_plan": [
+        {
+          "order": 1,
+          "action": "scale_service",
+          "target": "worker",
+          "command": "{\"replicas\": 1}",
+          "expected_effect": "Ensures the worker is running if the restart inadvertently left it in a stopped state."
+        }
+      ],
+      "risk_score": 0.1,
+      "blast_radius": "single_service",
+      "remediation_confidence": 0.95,
+      "escalate": false,
+      "requires_approval": true
+    },
+    "gate": {
+      "approved": true,
+      "route": "auto",
+      "proposal": {
+        "id": "rem-66d9ebd6e8c5",
+        "incident_id": "inc-166ff5e86c29",
+        "hypothesis_cause": "Queue backlog growing while a RUNNING consumer is wedged (not a scale change)",
+        "steps": [
+          {
+            "order": 1,
+            "action": "restart_service",
+            "target": "worker",
+            "command": null,
+            "expected_effect": "Clears the wedged state of the worker container, allowing it to resume processing jobs from the queue and reducing the queue depth."
+          }
+        ],
+        "rollback_plan": [
+          {
+            "order": 1,
+            "action": "scale_service",
+            "target": "worker",
+            "command": "{\"replicas\": 1}",
+            "expected_effect": "Ensures the worker is running if the restart inadvertently left it in a stopped state."
+          }
+        ],
+        "risk_score": 0.1,
+        "blast_radius": "single_service",
+        "remediation_confidence": 0.95,
+        "escalate": false,
+        "requires_approval": false
+      },
+      "escalation_reasons": [],
+      "human_action": null,
+      "note": ""
+    },
+    "execution": {
+      "proposal_id": "rem-66d9ebd6e8c5",
+      "incident_id": "inc-166ff5e86c29",
+      "success": true,
+      "step_outcomes": [
+        {
+          "step_order": 1,
+          "success": true,
+          "output": "restarted sandbox service 'worker'"
+        }
+      ],
+      "started_at": "2026-06-13T02:35:02.505136Z",
+      "finished_at": "2026-06-13T02:35:02.827794Z",
+      "error": null
+    },
+    "verification": {
+      "incident_id": "inc-166ff5e86c29",
+      "resolved": true,
+      "checks": [
+        {
+          "name": "all_probes_healthy",
+          "passed": true,
+          "detail": "0/3 probes failing"
+        },
+        {
+          "name": "no_active_alerts",
+          "passed": true,
+          "detail": "none firing"
+        },
+        {
+          "name": "backlog_draining",
+          "passed": true,
+          "detail": "queue_depth 0->0, jobs_processed delta +2"
+        }
+      ],
+      "verified_at": "2026-06-13T02:35:03.354311Z"
+    },
+    "rolled_back": false,
+    "outcome_recorded": true,
+    "llm": {
+      "calls": 2,
+      "input_tokens": 7467,
+      "output_tokens": 3341,
+      "est_cost_usd": 0.021862,
+      "steps": [
+        "triage.root_cause",
+        "remediation.plan"
+      ]
+    },
+    "stage_seconds": {
+      "triage": 45.8392,
+      "remediation": 19.1475,
+      "execution": 0.3229,
+      "verification": 0.5267
+    }
+  },
+  "llm_records": [
+    {
+      "model": "qwen3.7-max",
+      "role": "reasoning",
+      "step": "triage.root_cause",
+      "input_tokens": 5663,
+      "output_tokens": 2350,
+      "est_cost_usd": 0.015891,
+      "tier": "free",
+      "free_tokens_used": 8013,
+      "voucher_tokens_used": 0
+    },
+    {
+      "model": "qwen3.7-max",
+      "role": "planning",
+      "step": "remediation.plan",
+      "input_tokens": 1804,
+      "output_tokens": 991,
+      "est_cost_usd": 0.005971,
+      "tier": "free",
+      "free_tokens_used": 2795,
+      "voucher_tokens_used": 0
+    }
+  ],
+  "oracle_decisions": []
+}

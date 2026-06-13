@@ -1,0 +1,37 @@
+{
+  "baseline": {
+    "incident_id": "inc-924567234d58",
+    "root_cause": "Invalid feature_mode 'turbo_v2' configured in app service causing work requests to fail",
+    "confidence": 1.0,
+    "steps": [
+      {
+        "order": 1,
+        "action": "rollback",
+        "target": "app",
+        "command": null,
+        "expected_effect": ""
+      }
+    ],
+    "schema_failed": false,
+    "error": null
+  },
+  "application": {
+    "applied": true,
+    "success": true,
+    "invalid_tool_calls": 0,
+    "detail": "all steps applied"
+  },
+  "llm_records": [
+    {
+      "model": "qwen3.7-max",
+      "role": "reasoning",
+      "step": "baseline.single_prompt",
+      "input_tokens": 918,
+      "output_tokens": 511,
+      "est_cost_usd": 0.003064,
+      "tier": "free",
+      "free_tokens_used": 1429,
+      "voucher_tokens_used": 0
+    }
+  ]
+}

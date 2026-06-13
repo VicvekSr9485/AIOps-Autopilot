@@ -151,6 +151,8 @@ async def _run_pipeline_scenario(
         resolved=report.resolved,
         auto_resolved=report.resolved and report.gate.route == "auto",
         false_remediation=executed and not report.resolved,
+        # left altered/broken only if the wrong mutation was NOT rolled back
+        residual_damage=executed and not report.resolved and not report.rolled_back,
         escalated=report.gate.route == "human",
         outcome=classify_outcome(
             executed=executed, resolved=report.resolved,
@@ -203,6 +205,8 @@ async def _run_baseline_scenario(
         resolved=resolved,
         auto_resolved=resolved,  # the baseline never has a human in the loop
         false_remediation=executed and not resolved,
+        # the baseline never rolls back, so any failed mutation is left applied
+        residual_damage=executed and not resolved,
         escalated=False,  # the baseline has no escalation path at all
         outcome=classify_outcome(
             executed=executed, resolved=resolved, escalated=False,

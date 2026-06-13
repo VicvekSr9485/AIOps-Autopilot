@@ -1,0 +1,184 @@
+{
+  "report": {
+    "incident_id": "inc-a2d0af4b8762",
+    "resolved": false,
+    "triage": {
+      "incident_id": "inc-a2d0af4b8762",
+      "hypotheses": [
+        {
+          "incident_id": "inc-a2d0af4b8762",
+          "cause": "Queue consumer background worker is wedged or deadlocked while the HTTP server remains responsive",
+          "confidence": 0.9,
+          "evidence": [
+            {
+              "kind": "metric",
+              "pointer": "metric:queue_depth",
+              "excerpt": "queue_depth grows monotonically from 1 to 9"
+            },
+            {
+              "kind": "metric",
+              "pointer": "metric:jobs_processed",
+              "excerpt": "jobs_processed counter stops advancing and remains stuck at 1"
+            },
+            {
+              "kind": "log",
+              "pointer": "log:app",
+              "excerpt": "HTTP requests to /healthz and /work continue to return 200 OK, indicating the container is still running"
+            }
+          ],
+          "reasoning_summary": "The telemetry perfectly matches the 'Queue backlog growing while a RUNNING consumer is wedged' runbook. The queue_depth metric grows monotonically while the jobs_processed counter is stalled at 1, indicating the background queue consumer is stuck. However, the application container is still running and responsive to HTTP health checks and work requests, ruling out a scale-to-zero or full container crash."
+        }
+      ],
+      "consulted_runbooks": [
+        "Queue consumer SCALED TO ZERO replicas (capacity change, not a wedge) (score=0.1176): Distinguishing signal: a worker_shutdown (SIGTERM) line then SILENCE \u2014 the consumer container is GONE and its running replica count is ZERO (not merely wedged-but-running).\nRemediation: SCALE the consumer back up to its baseline replica count (scale_service, replicas>=1) \u2014 a RESTART is a NO-OP at zero replicas (no container to restart). Treat the scale-up as a capacity change.\nSymptoms: queue_dept",
+        "Queue backlog growing while a RUNNING consumer is wedged (not a scale change) (score=0.0961): Symptoms: queue_depth grows monotonically; jobs_processed counter stops advancing; user-facing requests and health checks stay green \u2014 a silent backlog with no error logs. The consumer container is STILL RUNNING (its replica count is unchanged) but stuck \u2014 paused, crashed in place, or deadlocked. There is NO worker_shutdown / SIGTERM and NO scale-down event.\nDiagnosis: confirm the worker still has",
+        "Postgres connection slots exhausted / too many clients (score=0.0573): Symptoms: health checks report the database component down; application requests fail with 'remaining connection slots are reserved' or 'sorry, too many clients already'; errors appear without a deploy or config change.\nDiagnosis: inspect pg_stat_activity for idle or long-running sessions (state, query_start, usename); compare session count against max_connections; look for batch jobs or leaked po"
+      ],
+      "telemetry_summary": "ALERT: sandbox.app.anomaly_suspected (severity=low, source=sandbox-probe)\n  0/6 health checks failing, 0/6 work requests failing\nMETRICS (30 points, windowed):\n  errors_total: first=0 last=0 delta=+0 samples=6\n  jobs_processed: first=1 last=1 delta=+0 samples=6\n  queue_depth: first=1 last=6 delta=+5 samples=6\n  requests_total: first=2 last=7 delta=+5 samples=6\n  work_success_total: first=2 last=7 delta=+5 samples=6\nLOGS (41 lines -> 41 distinct, top 12 shown):\n  [app] x1: INFO:     127.0.0.1:34070 - \"GET /healthz HTTP/1.1\" 200 OK\n  [app] x1: INFO:     127.0.0.1:34078 - \"GET /healthz HTTP/1.1\" 200 OK\n  [app] x1: INFO:     127.0.0.1:34094 - \"GET /healthz HTTP/1.1\" 200 OK\n  [app] x1: INFO:     192.168.65.1:18578 - \"GET /healthz HTTP/1.1\" 200 OK\n  [app] x1: INFO:     192.168.65.1:18578 - \"GET /metrics HTTP/1.1\" 200 OK\n  [app] x1: INFO:     192.168.65.1:18578 - \"GET /work HTTP/1.1\" 200 OK\n  [app] x1: INFO:     192.168.65.1:22411 - \"GET /healthz HTTP/1.1\" 200 OK\n  [app] x1: INFO:     192.168.65.1:22411 - \"GET /metrics HTTP/1.1\" 200 OK\n  [app] x1: INFO:     192.168.65.1:22411 - \"GET /work HTTP/1.1\" 200 OK\n  [app] x1: INFO:     192.168.65.1:30848 - \"GET /healthz HTTP/1.1\" 200 OK\n  [app] x1: INFO:     192.168.65.1:30848 - \"GET /metrics HTTP/1.1\" 200 OK\n  [app] x1: INFO:     192.168.65.1:30848 - \"GET /work HTTP/1.1\" 200 OK\n  ... 29 more distinct messages omitted",
+      "generated_at": "2026-06-13T02:52:17.568481Z"
+    },
+    "proposal": {
+      "id": "rem-b3c9d9a9fa7b",
+      "incident_id": "inc-a2d0af4b8762",
+      "hypothesis_cause": "Queue consumer background worker is wedged or deadlocked while the HTTP server remains responsive",
+      "steps": [
+        {
+          "order": 1,
+          "action": "restart_service",
+          "target": "worker",
+          "command": null,
+          "expected_effect": "Revives the stalled queue consumer, clearing the deadlock and allowing it to process the backlog."
+        }
+      ],
+      "rollback_plan": [
+        {
+          "order": 1,
+          "action": "restart_service",
+          "target": "worker",
+          "command": null,
+          "expected_effect": "Restart the worker again if the initial restart results in an unexpected state."
+        }
+      ],
+      "risk_score": 0.1,
+      "blast_radius": "single_service",
+      "remediation_confidence": 0.9,
+      "escalate": false,
+      "requires_approval": true
+    },
+    "gate": {
+      "approved": true,
+      "route": "auto",
+      "proposal": {
+        "id": "rem-b3c9d9a9fa7b",
+        "incident_id": "inc-a2d0af4b8762",
+        "hypothesis_cause": "Queue consumer background worker is wedged or deadlocked while the HTTP server remains responsive",
+        "steps": [
+          {
+            "order": 1,
+            "action": "restart_service",
+            "target": "worker",
+            "command": null,
+            "expected_effect": "Revives the stalled queue consumer, clearing the deadlock and allowing it to process the backlog."
+          }
+        ],
+        "rollback_plan": [
+          {
+            "order": 1,
+            "action": "restart_service",
+            "target": "worker",
+            "command": null,
+            "expected_effect": "Restart the worker again if the initial restart results in an unexpected state."
+          }
+        ],
+        "risk_score": 0.1,
+        "blast_radius": "single_service",
+        "remediation_confidence": 0.9,
+        "escalate": false,
+        "requires_approval": false
+      },
+      "escalation_reasons": [],
+      "human_action": null,
+      "note": ""
+    },
+    "execution": {
+      "proposal_id": "rem-b3c9d9a9fa7b",
+      "incident_id": "inc-a2d0af4b8762",
+      "success": true,
+      "step_outcomes": [
+        {
+          "step_order": 1,
+          "success": true,
+          "output": "restarted sandbox service 'worker'"
+        }
+      ],
+      "started_at": "2026-06-13T02:52:44.600889Z",
+      "finished_at": "2026-06-13T02:52:44.705166Z",
+      "error": null
+    },
+    "verification": {
+      "incident_id": "inc-a2d0af4b8762",
+      "resolved": false,
+      "checks": [
+        {
+          "name": "all_probes_healthy",
+          "passed": true,
+          "detail": "0/3 probes failing"
+        },
+        {
+          "name": "no_active_alerts",
+          "passed": true,
+          "detail": "none firing"
+        },
+        {
+          "name": "backlog_draining",
+          "passed": false,
+          "detail": "queue_depth 117->119, jobs_processed delta +0"
+        }
+      ],
+      "verified_at": "2026-06-13T02:53:29.738430Z"
+    },
+    "rolled_back": true,
+    "outcome_recorded": true,
+    "llm": {
+      "calls": 2,
+      "input_tokens": 7329,
+      "output_tokens": 3971,
+      "est_cost_usd": 0.024052,
+      "steps": [
+        "triage.root_cause",
+        "remediation.plan"
+      ]
+    },
+    "stage_seconds": {
+      "triage": 49.5216,
+      "remediation": 27.0318,
+      "execution": 0.1045,
+      "verification": 45.0341
+    }
+  },
+  "llm_records": [
+    {
+      "model": "qwen3.7-max",
+      "role": "reasoning",
+      "step": "triage.root_cause",
+      "input_tokens": 5560,
+      "output_tokens": 2562,
+      "est_cost_usd": 0.016557,
+      "tier": "free",
+      "free_tokens_used": 8122,
+      "voucher_tokens_used": 0
+    },
+    {
+      "model": "qwen3.7-max",
+      "role": "planning",
+      "step": "remediation.plan",
+      "input_tokens": 1769,
+      "output_tokens": 1409,
+      "est_cost_usd": 0.007495,
+      "tier": "free",
+      "free_tokens_used": 3178,
+      "voucher_tokens_used": 0
+    }
+  ],
+  "oracle_decisions": []
+}

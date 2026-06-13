@@ -8,6 +8,7 @@ used by tests and (later) the benchmark.
 
 from __future__ import annotations
 
+import re
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
 
@@ -45,6 +46,16 @@ class Fault(ABC):
     @abstractmethod
     def symptoms_present(self, snapshots: Sequence[ProbeSnapshot]) -> bool:
         """True if the expected symptom signature is visible in the observations."""
+
+    def redact_capture(self, log_text: str) -> str:
+        """Shape the alert-time CAPTURE the agent ingests (default: identity).
+
+        Models degraded alert-time observability: a fault can override this to
+        strip decisive detail from the captured bundle while leaving it in the
+        LIVE service logs (reachable only via a telemetry query during triage).
+        Applied by ScenarioRunner BEFORE build_incident; the controller's live
+        logs() — what the telemetry MCP server reads — are untouched."""
+        return log_text
 
 
 def _component_down(snap: ProbeSnapshot, component: str) -> bool:
@@ -296,6 +307,23 @@ class DbOutageAmbiguous(DbConnectionExhaustion):
         severity=Severity.high,
     )
     log_signature = "remaining connection slots"
+
+    # The decisive 'remaining connection slots' / 'too many clients' FATAL text
+    # is what separates pool exhaustion from a credential failure. Redact it
+    # from the captured bundle (down to a generic 'db connection failure', the
+    # same shape a credential failure produces) so the alert-time capture is
+    # genuinely ambiguous; postgres keeps writing the FATAL to its live logs, so
+    # a triage-time query_logs call can still recover it — but a no-tool reader
+    # of the capture cannot disambiguate. Models the real gap between a generic
+    # app-surfaced error and the raw DB driver detail.
+    _DECISIVE = re.compile(
+        r"(remaining connection slots[^\"\\\n]*"
+        r"|sorry, too many clients already)",
+        re.IGNORECASE,
+    )
+
+    def redact_capture(self, log_text: str) -> str:
+        return self._DECISIVE.sub("db connection failure", log_text)
 
 
 class WorkerScaledToZero(Fault):

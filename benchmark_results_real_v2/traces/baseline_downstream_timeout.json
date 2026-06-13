@@ -1,0 +1,37 @@
+{
+  "baseline": {
+    "incident_id": "inc-66dc3b664ba4",
+    "root_cause": "Downstream service is unresponsive or hung, causing downstream_timeout errors in the app service.",
+    "confidence": 0.9,
+    "steps": [
+      {
+        "order": 1,
+        "action": "restart_service",
+        "target": "downstream",
+        "command": null,
+        "expected_effect": ""
+      }
+    ],
+    "schema_failed": false,
+    "error": null
+  },
+  "application": {
+    "applied": true,
+    "success": true,
+    "invalid_tool_calls": 0,
+    "detail": "all steps applied"
+  },
+  "llm_records": [
+    {
+      "model": "qwen3.7-max",
+      "role": "reasoning",
+      "step": "baseline.single_prompt",
+      "input_tokens": 896,
+      "output_tokens": 812,
+      "est_cost_usd": 0.004165,
+      "tier": "free",
+      "free_tokens_used": 1708,
+      "voucher_tokens_used": 0
+    }
+  ]
+}

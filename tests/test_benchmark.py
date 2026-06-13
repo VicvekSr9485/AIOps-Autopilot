@@ -69,8 +69,8 @@ def test_metrics_compute_and_are_coherent(bench):
         assert a.scenarios == len(FAULT_IDS)
         for rate in (a.root_cause_top1_acc, a.root_cause_top3_acc,
                      a.remediation_correct_rate, a.auto_resolution_rate,
-                     a.false_remediation_rate, a.escalation_rate,
-                     a.schema_failure_rate):
+                     a.false_remediation_rate, a.residual_damage_rate,
+                     a.escalation_rate, a.schema_failure_rate):
             assert 0.0 <= rate <= 1.0
         assert a.tokens_p95 >= a.tokens_mean > 0
 
@@ -159,7 +159,8 @@ def test_safety_separation_pipeline_vs_baseline(bench):
 def test_models_recorded_and_constant(bench):
     report, _, client = bench
     assert report.model_consistency_ok
-    assert report.models == {"reasoning": "qwen3.7-max", "default": "qwen3.7-plus"}
+    assert report.models == {"reasoning": "qwen3.7-max", "planning": "qwen3.7-max",
+                             "default": "qwen3.7-plus"}
     assert {r.model for r in client.meter.records} <= set(report.models.values())
 
 
@@ -221,7 +222,11 @@ def test_cost_summary_populates_with_caveat(bench):
     assert cost.total_tokens > 0 and cost.est_cost_usd > 0
     assert cost.free_tokens_used + cost.voucher_tokens_used == cost.total_tokens
     assert "Qwen Cloud" in cost.caveat and "authoritative" in cost.caveat
-    assert set(cost.per_model) == {"qwen3.7-max", "qwen3.7-plus"}
+    # With the planner promoted to "planning"->qwen3.7-max, the live pipeline +
+    # baseline now run entirely on the max tier; the cheap tier stays configured
+    # but is currently uncalled, so per_model is a subset of the priced models.
+    assert set(cost.per_model) <= {"qwen3.7-max", "qwen3.7-plus"}
+    assert "qwen3.7-max" in cost.per_model
     # run-level numbers reconcile with the single shared meter
     metered = sum(r.input_tokens + r.output_tokens for r in client.meter.records)
     assert cost.total_tokens == metered
@@ -367,6 +372,28 @@ def test_safe_outcome_rates_in_benchmark(bench):
         summaries["baseline"].safe_outcome_rate
     for a in report.approaches:
         assert sum(a.outcome_counts.values()) == a.scenarios
+
+
+def test_residual_damage_contained_by_pipeline(bench):
+    """Containment metric (reported alongside the others, not in isolation):
+    'left the sandbox altered/broken' = applied a mutation that was NOT rolled
+    back AND health was not restored. Same definition for both approaches. The
+    pipeline's auto-rollback drives this to ~0; the gateless baseline, with no
+    rollback, leaves every failed mutation applied."""
+    report, _, _ = bench
+    summaries = {a.approach: a for a in report.approaches}
+    # the pipeline rolls back every wrong action it takes -> no residual damage
+    assert summaries["pipeline"].residual_damage_rate == 0.0
+    # the baseline cannot roll back, so its false remediations are all residual
+    assert summaries["baseline"].residual_damage_rate > 0.0
+    # per-scenario invariant: residual_damage implies executed, not resolved,
+    # and (for any approach) not rolled back
+    for s in report.scenarios:
+        if s.residual_damage:
+            assert s.executed and not s.resolved and not s.rolled_back
+        # a rolled-back failure is contained, never residual
+        if s.executed and not s.resolved and s.rolled_back:
+            assert not s.residual_damage
 
 
 async def test_planner_not_starved_by_vague_hypothesis():

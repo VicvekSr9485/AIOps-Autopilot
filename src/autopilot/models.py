@@ -127,10 +127,19 @@ class RemediationProposal(BaseModel):
     id: str = Field(default_factory=lambda: new_id("rem"))
     incident_id: str
     hypothesis_cause: str
-    steps: list[RemediationStep]
+    steps: list[RemediationStep]  # may be empty iff escalate=True (no safe action)
     rollback_plan: list[RemediationStep] = Field(default_factory=list)
     risk_score: float = Field(ge=0.0, le=1.0)
     blast_radius: BlastRadius
+    # The planner's confidence in THIS remediation (not the diagnosis). The HITL
+    # gate gates on this, not on hypothesis confidence — a correct diagnosis
+    # with a shaky/uncertain fix must still reach a human.
+    remediation_confidence: float = Field(default=1.0, ge=0.0, le=1.0)
+    # The planner declined to act: no fix is expressible in the action
+    # vocabulary (or remediation confidence is too low). Always escalates to a
+    # human at the gate; never an auto "safe" pass — escalating a fault that
+    # HAS a valid in-vocabulary fix still scores MISSED_ESCALATION downstream.
+    escalate: bool = False
     requires_approval: bool = True  # HITL gate default-closed
 
 

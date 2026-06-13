@@ -73,19 +73,23 @@ SEED_RUNBOOKS: list[Runbook] = [
     ),
     Runbook(
         slug="queue-consumer-stall",
-        title="Queue backlog growing while consumers sit idle",
+        title="Queue backlog growing while a RUNNING consumer is wedged (not a scale change)",
         body=(
             "Symptoms: queue_depth grows monotonically; jobs_processed counter stops "
             "advancing; user-facing requests and health checks stay green — a silent "
-            "backlog with no error logs.\n"
-            "Diagnosis: compare producer and consumer rates over a window; check the "
-            "worker/consumer process state (paused, crashed, deadlocked); verify the "
-            "queue itself accepts reads.\n"
-            "Remediation: restart (or unpause) the worker service so consumption "
-            "resumes, then watch queue_depth drain and jobs_processed advance.\n"
+            "backlog with no error logs. The consumer container is STILL RUNNING (its "
+            "replica count is unchanged) but stuck — paused, crashed in place, or "
+            "deadlocked. There is NO worker_shutdown / SIGTERM and NO scale-down event.\n"
+            "Diagnosis: confirm the worker still has its normal replica count, then "
+            "check its process state (paused, crashed, deadlocked); verify the queue "
+            "accepts reads. If replicas dropped to zero instead, this is the wrong "
+            "runbook — see the scaled-to-zero runbook.\n"
+            "Remediation: RESTART (or unpause) the worker service in place so "
+            "consumption resumes — do NOT change the replica count. Then watch "
+            "queue_depth drain and jobs_processed advance.\n"
             "Risk: low — jobs remain queued; restarting the consumer loses no work."
         ),
-        tags=["worker", "queue", "backlog"],
+        tags=["worker", "queue", "backlog", "wedged"],
     ),
     Runbook(
         slug="credential-rotation-failure",
@@ -126,23 +130,25 @@ SEED_RUNBOOKS: list[Runbook] = [
     ),
     Runbook(
         slug="consumer-scaled-to-zero",
-        title="Queue consumer scaled to zero replicas",
+        title="Queue consumer SCALED TO ZERO replicas (capacity change, not a wedge)",
         body=(
-            "Symptoms: worker_shutdown (SIGTERM) in the logs and then silence; "
-            "queue_depth climbing while jobs_processed stays flat; health checks "
-            "green because nothing user-facing is failing yet.\n"
-            "Remediation: scale the consumer back to its baseline replica count. "
-            "IMPORTANT: restarting the service is a NO-OP when zero replicas "
-            "exist — there is no container to restart; an explicit scale-up is "
-            "required. Treat the scale-up as a capacity change (review before "
-            "applying).\n"
+            "Distinguishing signal: a worker_shutdown (SIGTERM) line then SILENCE — "
+            "the consumer container is GONE and its running replica count is ZERO "
+            "(not merely wedged-but-running).\n"
+            "Remediation: SCALE the consumer back up to its baseline replica count "
+            "(scale_service, replicas>=1) — a RESTART is a NO-OP at zero replicas "
+            "(no container to restart). Treat the scale-up as a capacity change.\n"
+            "Symptoms: queue_depth climbing while jobs_processed stays flat; health "
+            "checks green because nothing user-facing is failing yet.\n"
             "Diagnosis: check the service's desired replica count vs running "
             "containers; a SIGTERM shutdown with no restart strongly suggests a "
-            "deliberate scale-down or autoscaler action.\n"
+            "deliberate scale-down or autoscaler action. If the worker is still "
+            "running at its normal replica count, this is the wrong runbook — see "
+            "the wedged-consumer (stall) runbook.\n"
             "Risk: medium — capacity changes are destructive-class operations; "
             "confirm the original scale-down was not intentional."
         ),
-        tags=["worker", "queue", "capacity"],
+        tags=["worker", "queue", "capacity", "scaled-to-zero"],
     ),
     # ----- distractors: realistic runbooks for failure modes the sandbox can't have
     Runbook(

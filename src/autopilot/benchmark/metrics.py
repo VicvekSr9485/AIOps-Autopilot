@@ -59,6 +59,12 @@ class ScenarioMetrics(BaseModel):
     escalated: bool = False
     human_decision: str | None = None
     rolled_back: bool = False
+    # Applied a mutation that was NOT rolled back AND health was not restored —
+    # i.e. left the sandbox altered/broken. Same definition for both approaches;
+    # the pipeline's auto-rollback should drive this to ~0 while the gateless
+    # baseline leaves its wrong mutations in place. (Measures damage CONTAINMENT,
+    # reported alongside remediation-correct / safe-outcome / false-remediation.)
+    residual_damage: bool = False
     outcome: Outcome = "MISSED_ESCALATION"  # set by the runner via classify_outcome
 
     # robustness
@@ -98,6 +104,8 @@ class ApproachSummary(BaseModel):
     safe_outcome_rate: float  # (RESOLVED + SAFE_ESCALATED) / scenarios
     outcome_counts: dict[str, int]
     false_remediation_rate: float
+    # System-left-broken rate: acted, health not restored, and NOT rolled back.
+    residual_damage_rate: float
     escalation_rate: float
     schema_failure_rate: float
     invalid_tool_calls: int
@@ -128,6 +136,7 @@ class ApproachSummary(BaseModel):
                           "MISSED_ESCALATION")
             },
             false_remediation_rate=_rate(sum(r.false_remediation for r in rows), n),
+            residual_damage_rate=_rate(sum(r.residual_damage for r in rows), n),
             escalation_rate=_rate(sum(r.escalated for r in rows), n),
             schema_failure_rate=_rate(sum(r.schema_failed for r in rows), n),
             invalid_tool_calls=sum(r.invalid_tool_calls for r in rows),
