@@ -5,14 +5,14 @@ Python SDK, `FastMCP`). Each runs over stdio:
 
 ```bash
 make mcp-telemetry    # read-only observation of the sandbox stack
-make mcp-infra        # mutating ops — sandbox-only, dry-run by default
+make mcp-infra        # mutating ops, sandbox-only, dry-run by default
 make mcp-knowledge    # runbook / past-incident retrieval + outcome recording
 ```
 
 Guardrails common to the whole surface:
 
 - **Sandbox-only.** Service-targeting params are closed enums over the
-  compose-service vocabulary (`app`, `worker`, `downstream`, `db`, `queue`) —
+  compose-service vocabulary (`app`, `worker`, `downstream`, `db`, `queue`);
   out-of-enum values die at schema validation, and a runtime guard re-validates
   for direct in-process calls. The vocabulary is test-enforced to match
   `sandbox/docker-compose.yml`.
@@ -27,7 +27,7 @@ Guardrails common to the whole surface:
 
 ### Server-side parameter injection
 
-Known deterministic values are never model-supplied parameters — they are
+Known deterministic values are never model-supplied parameters; they are
 injected server-side, so the model cannot hallucinate them, they cost zero
 prompt/output tokens, and the sandbox-only guarantee is structural rather than
 validated:
@@ -35,7 +35,7 @@ validated:
 | Value | How it is injected |
 |---|---|
 | Sandbox namespace / compose target | `SandboxController` bound at server build time; echoed read-only as `OpResult.namespace` |
-| Active incident id | `RunContext.incident_id`, set by the pipeline per run; `record_outcome` reads it (and errors if unbound). A spoofed `incident_id` argument is ignored by the SDK — the binding wins |
+| Active incident id | `RunContext.incident_id`, set by the pipeline per run; `record_outcome` reads it (and errors if unbound). A spoofed `incident_id` argument is ignored by the SDK; the binding wins |
 | Config tools' target service (`app`) | fixed in the tool body of `apply_config` / `rollback` |
 
 Model-facing signatures expose only genuine decisions: which tool, which
@@ -53,25 +53,25 @@ smaller action surface (a stage that cannot see a tool cannot call it).
 |---|---|
 | `triage` | telemetry + knowledge |
 | `root_cause` | telemetry + knowledge |
-| `planner` | **none** — it reasons over evidence already gathered |
+| `planner` | **none** (it reasons over evidence already gathered) |
 | `executor` | infra/ops only (post-HITL) |
 | `verification` | telemetry only |
 
 The invariant behind the table: **only the executor may call mutating
 (Infra/Ops) tools**. Triage and verification observe; the planner holds no
-tools at all — instead of read-only access, the evidence it needs (summarized
+tools at all; instead of read-only access, the evidence it needs (summarized
 telemetry, cited evidence, retrieved runbooks) is forwarded on `TriageResult`,
 which is both cheaper (no re-querying) and a stronger guarantee (nothing to
 misuse). Triage's tool use is deterministic pipeline code, not a model loop:
 live log groups, a fresh metric window, an alert re-check, and retrieval run
 before its one reasoning-tier call.
 
-Unknown stages raise; new stages must be added to `STAGE_SERVERS` explicitly —
+Unknown stages raise; new stages must be added to `STAGE_SERVERS` explicitly, and
 the default is no tools.
 
 ### Why not a gateway / dynamic discovery / code-execution mode
 
-At this scale — 3 local stdio servers, ~12 tools, one agent — heavier patterns
+At this scale (3 local stdio servers, ~12 tools, one agent), heavier patterns
 cost more than they return:
 
 - **Gateway/router:** an extra process and hop with nothing to route; there is
@@ -84,13 +84,13 @@ cost more than they return:
 - **Code-execution mode** (model writes code that calls tools): adds a second
   execution surface that would have to be sandboxed separately, undermining the
   single hard guarantee (all actions flow through enumerated, typed, HITL-gated
-  tool calls — which are themselves the audit log).
+  tool calls, which are themselves the audit log).
 
 All results are JSON-serialized Pydantic models; field types below use Python
 notation. Errors (guard refusals, invalid input) surface as MCP tool errors
 (`isError=true`) with a `refusing to …` message.
 
-## Telemetry server — `autopilot-telemetry`
+## Telemetry server: `autopilot-telemetry`
 
 ### `query_logs`
 
@@ -101,8 +101,8 @@ with counts, most frequent first.
 |---|---|---|---|
 | `service` | `SandboxService \| None` | `None` | closed enum of sandbox services |
 | `contains` | `str \| None` | `None` | case-insensitive substring filter |
-| `since_minutes` | `int` | `15` | clamped to 1–240 |
-| `limit` | `int` | `50` | clamped to 1–200 (hard cap) |
+| `since_minutes` | `int` | `15` | clamped to 1-240 |
+| `limit` | `int` | `50` | clamped to 1-200 (hard cap) |
 
 Output `LogQueryResult`: `window_minutes: int`, `total_lines: int`,
 `matched: int`, `groups_returned: int`, `truncated: bool`,
@@ -115,8 +115,8 @@ Sample app metrics over a short window; each series summarized, never raw points
 | Input | Type | Default | Notes |
 |---|---|---|---|
 | `names` | `list[str] \| None` | `None` | default: all known metrics |
-| `samples` | `int` | `3` | clamped to 2–10 |
-| `interval_s` | `float` | `1.0` | clamped to 0–5 |
+| `samples` | `int` | `3` | clamped to 2-10 |
+| `interval_s` | `float` | `1.0` | clamped to 0-5 |
 
 Known metrics: `requests_total`, `errors_total`, `work_success_total`,
 `queue_depth`, `jobs_processed`.
@@ -127,7 +127,7 @@ Output `MetricsQueryResult`: `samples: int`, `interval_s: float`,
 ### `get_active_alerts`
 
 Probe the stack and synthesize alerts from observed health/work signals
-(same path as ingestion — no ground truth involved).
+(same path as ingestion, no ground truth involved).
 
 | Input | Type | Default |
 |---|---|---|
@@ -150,7 +150,7 @@ Output `TraceResult`: `path: str`, `status: int | None`, `latency_ms: float`,
 `ok: bool`, `body_excerpt: str` (≤500 chars), `error: str | None`,
 `events: list[{service, message, timestamp}]`.
 
-## Infra/Ops server — `autopilot-infra`
+## Infra/Ops server: `autopilot-infra`
 
 All mutating tools share the output shape `OpResult`: `tool: str`,
 `target: str`, `namespace: str` (injected server-side, always
@@ -162,15 +162,15 @@ and `detail` describes exactly what would happen.
 
 | Input | Type | Default | Notes |
 |---|---|---|---|
-| `service` | `SandboxService` | — | closed enum of sandbox services |
+| `service` | `SandboxService` | (required) | closed enum of sandbox services |
 | `dry_run` | `bool` | `true` | |
 
 ### `scale_service`
 
 | Input | Type | Default | Notes |
 |---|---|---|---|
-| `service` | `SandboxService` | — | closed enum of sandbox services |
-| `replicas` | `int` | — | 0–3; 0 stops the service |
+| `service` | `SandboxService` | (required) | closed enum of sandbox services |
+| `replicas` | `int` | (required) | 0-3; 0 stops the service |
 | `dry_run` | `bool` | `true` | |
 
 Sandbox services pin `container_name`, so compose rejects `replicas > 1`; that
@@ -183,7 +183,7 @@ No-ops when the active config already matches the patch.
 
 | Input | Type | Default | Notes |
 |---|---|---|---|
-| `patch` | `AppConfigPatch` | — | `feature_mode: str`, `downstream_url: str`, `downstream_timeout_s: float` (all optional; unknown keys rejected) |
+| `patch` | `AppConfigPatch` | (required) | `feature_mode: str`, `downstream_url: str`, `downstream_timeout_s: float` (all optional; unknown keys rejected) |
 | `dry_run` | `bool` | `true` | |
 
 ### `rollback`
@@ -201,7 +201,7 @@ No inputs. Output `HealthCheckResult`: `healthy: bool`,
 `healthz_status: int | None`, `work_status: int | None`,
 `components: dict[str, bool]`, `captured_at: datetime`.
 
-## Knowledge server — `autopilot-knowledge`
+## Knowledge server: `autopilot-knowledge`
 
 Backed by the local SQLite vector store (`data/knowledge.db`; deterministic
 hashing embeddings, sqlite-vec KNN when the interpreter can load SQLite
@@ -212,11 +212,11 @@ build with the runbook corpus in `mcp_servers/runbooks.py`.
 
 | Input | Type | Default | Notes |
 |---|---|---|---|
-| `query` | `str` | — | symptom / hypothesis description |
-| `k` | `int` | `3` | 1–10 |
+| `query` | `str` | (required) | symptom / hypothesis description |
+| `k` | `int` | `3` | 1-10 |
 
 Output `SearchRunbooksResult`: `query: str`,
-`results: list[{slug, title, score, excerpt, tags}]` — `score` is cosine
+`results: list[{slug, title, score, excerpt, tags}]`. `score` is cosine
 similarity, higher = more relevant; `excerpt` ≤600 chars.
 
 ### `search_past_incidents`
@@ -227,16 +227,16 @@ Same inputs as `search_runbooks`. Output `SearchIncidentsResult`: `query: str`,
 ### `record_outcome`
 
 Record how the **active** incident turned out. The incident id is injected
-server-side from the run-bound `RunContext` — it is not a model-facing
+server-side from the run-bound `RunContext`; it is not a model-facing
 parameter, and the tool errors if no incident is bound. Idempotent: upserts by
 the bound incident id.
 
 | Input | Type | Default |
 |---|---|---|
-| `summary` | `str` | — |
-| `root_cause` | `str` | — |
-| `remediation` | `str` | — |
-| `resolved` | `bool` | — |
+| `summary` | `str` | (required) |
+| `root_cause` | `str` | (required) |
+| `remediation` | `str` | (required) |
+| `resolved` | `bool` | (required) |
 | `notes` | `str` | `""` |
 
 Output `RecordOutcomeResult`: `incident_id: str` (the injected id), `doc_id: int`,
@@ -245,10 +245,10 @@ Output `RecordOutcomeResult`: `incident_id: str` (the injected id), `doc_id: int
 ## Testing
 
 `tests/test_mcp_servers.py` exercises every tool over an in-memory MCP session
-(`mcp.shared.memory`) against a fake controller / in-memory store — offline, no
+(`mcp.shared.memory`) against a fake controller / in-memory store, offline, no
 Docker, mock mode. Covered: schema validation of all results, `dry_run`
 defaults honored (no action recorded), idempotent no-ops, adversarial target
-rejection (foreign names, shell injection strings, traversal paths — all die at
+rejection (foreign names, shell injection strings, traversal paths; all die at
 the enum), server-side injection (namespace echoed, incident id bound, spoofed
 `incident_id` args ignored), stage-exposure minimal sets, enum↔compose sync.
 `tests/test_knowledge_store.py` covers the store itself.
