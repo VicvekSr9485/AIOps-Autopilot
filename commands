@@ -1,9 +1,0 @@
-curl -fsS http://47.84.237.150:8080/api/cloud/selfcheck | jq '{headline, mocked, cloud_host, region, model, est_cost_usd, latency_ms}'
-
-sudo docker compose -f deployment/docker-compose.yml exec -T backend python -m autopilot.cloud.qwen_live
-
-
-
-curl -s localhost:8080/api/benchmark | jq '.approaches[] | {approach, invalid_tool_calls}'
-
-curl -s http://47.84.237.150:8080/api/cloud/selfcheck | jq '{mocked, cloud_host, region, model}'
