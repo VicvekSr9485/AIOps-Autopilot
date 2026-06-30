@@ -92,6 +92,13 @@ file [`src/autopilot/cloud/qwen_live.py`](src/autopilot/cloud/qwen_live.py) (and
 route `GET /api/cloud/selfcheck`) makes one real, metered round-trip to the Qwen
 Cloud (`*.aliyuncs.com`) endpoint and reports host/region/model/tokens/cost.
 
+**Proof recording:** a short clip of the deployed backend on Alibaba Cloud ECS
+returning a live `mocked: false` Qwen Cloud round-trip.
+
+<!-- Replace the line below: edit this README on github.com, drag the .mp4 into
+     the editor so GitHub hosts it on its asset CDN and embeds an inline player. -->
+https://github.com/user-attachments/assets/REPLACE_WITH_UPLOADED_VIDEO
+
 ## Architecture
 
 ```
